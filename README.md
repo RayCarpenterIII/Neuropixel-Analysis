@@ -1,0 +1,2 @@
+# Predicting Visual Perception in Mice with Neuropixel Data
+The goal of this project is to predict the visual stimulus presented to mice based on the firing rates of their neurons. We utilize data from the Ecephys Project, which employs Neuropixel technology to record large-scale neural activity. The analysis includes calculating unit firing rates from the pre-processed spike trains, visualizing neuronal firing patterns, and applying machine learning techniques for image prediction.
