@@ -72,12 +72,6 @@ def pick_session_and_pull_data(cache, session_number):
     
     return spike_times, stimulus_table
 
-# if __name__ == "__main__":
-#     output_dir, manifest_path = create_directory_and_manifest()
-#     cache, session_table = create_cache_get_session_table(manifest_path)
-#     session_number = session_table.index[0]  # Example: Picking the first session number
-#     spike_times, stimulus_table = pick_session_and_pull_data(cache, session_number)
-
 
 def filter_valid_spike_times(session):
     """
@@ -103,10 +97,6 @@ def filter_valid_spike_times(session):
 
     return valid_spike_times
 
-# if __name__ == "__main__":
-#     # Assume session is already defined
-#     invalid_times = get_invalid_times(session)
-#     valid_spike_times = filter_valid_spike_times(spike_times, invalid_times)
 
 def get_stimulus_table(session, stimulus_type="natural_scenes"):
     """Retrieve the stimulus table for a given stimulus type."""
@@ -135,20 +125,22 @@ def process_neuron(times, image_start_times, image_end_times, total_bins, bins_p
         start_bin = end_bin
     return neuron_spike_bins
 
+def process_neuron_wrapper(args):
+    """Wrapper function to unpack arguments and call process_neuron."""
+    return process_neuron(*args)
+
 def process_all_neurons(spike_times, image_start_times, image_end_times, total_bins, bins_per_image):
     """Process all neurons in parallel."""
+    # Prepare the arguments for each neuron to be processed
+    args_list = [(times, image_start_times, image_end_times, total_bins, bins_per_image) for times in spike_times.values()]
+    
+    # Process neurons using a pool of worker processes
     with concurrent.futures.ProcessPoolExecutor() as executor:
-        spike_matrix = list(tqdm(executor.map(lambda times: process_neuron(times, image_start_times, image_end_times, total_bins, bins_per_image), 
-                                              spike_times.values()), total=len(spike_times.keys()), desc='Processing neurons'))
+        # Use a list comprehension to map process_neuron_wrapper over the arguments
+        spike_matrix = list(tqdm(executor.map(process_neuron_wrapper, args_list), total=len(spike_times), desc='Processing neurons'))
+    
     return torch.stack(spike_matrix)
 
-# if __name__ == "__main__":
-#     # Assume session and spike_times are already defined
-#     stimulus_table = get_stimulus_table(session)
-#     image_start_times, image_end_times, total_bins, bins_per_image = calculate_bins(stimulus_table)
-#     spike_matrix = process_all_neurons(spike_times, image_start_times, image_end_times, total_bins, bins_per_image)
-#     spike_dataframe = create_spike_dataframe(spike_matrix, spike_times)
-#     print(spike_dataframe.T)
 
 def create_and_prepare_spike_dataframe(spike_matrix, spike_times, stimulus_table):
     """
@@ -196,13 +188,6 @@ def save_and_count_spike_dataframe(spike_df, session_number, output_dir):
         
     return file_name
 
-# if __name__ == "__main__":
-#     # Assume spike_dataframe, stimulus_table, and session_number are already defined
-#     spike_df = prepare_spike_dataframe(spike_dataframe, stimulus_table)
-#     pickle_file = save_spike_dataframe(spike_df, session_number)
-#     nan_count = count_nan_values(spike_df)
-#     print(f"Number of NaN values: {nan_count}")
-#     print(f"Spike DataFrame saved to {pickle_file}")
 
 def normalize_firing_rates(df):
     """Normalize the firing rates by calculating z-scores."""
@@ -243,16 +228,6 @@ def filter_and_save_neurons(normalized_firing_rates, highest_value=100, lowest_v
         
     return filtered_normalized_firing_rates
 
-# if __name__ == "__main__":
-#     # Assume spike_df and session_number are already defined
-#     normalized_firing_rates = normalize_firing_rates(spike_df)
-#     filtered_normalized_firing_rates = filter_neurons(normalized_firing_rates, highest_value=100, lowest_value=1)
-    
-#     nan_present = check_for_nan(filtered_normalized_firing_rates)
-#     print(f"There {'are' if nan_present else 'are no'} NaN values in the DataFrame")
-    
-#     pickle_file = save_filtered_data(filtered_normalized_firing_rates, session_number)
-#     print(f"Filtered normalized firing rates saved to {pickle_file}")
 
 def process_and_save_data(session, spike_times, session_number, output_dir, timesteps_per_frame=10, highest_value=100, lowest_value=0):
     """
@@ -305,12 +280,12 @@ def master_function(session_number, output_dir='output', timesteps_per_frame=10,
     """
     start_time = time.time()
 
-    print("Updated version 2!")
+    print("Updated version 3!")
     print("Initializing workflow...")
 
-    filtered_data_path = os.path.join(output_dir, f'filtered_normalized_pickle_{session_number}.pkl')
+    filtered_data_path = os.path.join(output_dir, f'filtered_normalized_pickle_{session_number}_{timesteps_per_frame}.pkl')
     if os.path.exists(filtered_data_path):
-        print(f"Session data for session number {session_number} has already been downloaded.")
+        print(f"Session data for session number {session_number} and {timesteps_per_frame} timesteps per frame already been downloaded.")
         print(f"Total time elapsed: {time.time() - start_time:.2f} seconds")
         return None
 
@@ -351,12 +326,12 @@ def master_function(session_number, output_dir='output', timesteps_per_frame=10,
     #TODO: Print time elapsed
     print(f"Total time elapsed: {time.time() - start_time:.2f} seconds")
     
-    return os.path.join(output_dir, f'filtered_normalized_pickle_{session_number}.pkl')
+    return os.path.join(output_dir, f'filtered_normalized_pickle_{session_number}_{timesteps_per_frame}.pkl')
 
 if __name__ == "__main__":
-    # Define some default parameters for testing
-    default_session_number = 123456  # Replace with an actual session number
-    default_output_dir = "./output_data"  # Replace with output directory
+
+    default_session_number = 123456  # Replace with session number
+    default_output_dir = "./output_data"  #Can rename 
     
     # Execute the master function
     print("Executing the master function...")
