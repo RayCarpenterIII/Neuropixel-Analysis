@@ -282,22 +282,22 @@ def master_function(session_number, output_dir='output', timesteps_per_frame=10,
 
     print("Updated version 3!")
     print("Initializing workflow...")
+    
+    # Step 1: Create directory and manifest
+    print("Creating directory and manifest path...")
+    output_dir, manifest_path = create_directory_and_manifest(directory_name=output_dir)
 
+    print("Initializing EcephysProjectCache and session table...")
+    # Step 2: Initialize EcephysProjectCache and get session table
+    cache, session_table = create_cache_get_session_table(manifest_path)
     session = cache.get_session_data(session_number)
 
+    #Check if session data already exists 
     filtered_data_path = os.path.join(output_dir, f'filtered_normalized_pickle_{session_number}_{timesteps_per_frame}.pkl')
     if os.path.exists(filtered_data_path):
         print(f"Session data for session number {session_number} and {timesteps_per_frame} timesteps per frame already been downloaded.")
         print(f"Total time elapsed: {time.time() - start_time:.2f} seconds")
         return session
-
-    # Step 1: Create directory and manifest
-    print("Creating directory and manifest path...")
-    output_dir, manifest_path = create_directory_and_manifest(directory_name=output_dir)
-    
-    print("Initializing EcephysProjectCache and session table...")
-    # Step 2: Initialize EcephysProjectCache and get session table
-    cache, session_table = create_cache_get_session_table(manifest_path)
     
     print("Fetching session data and spike times...")
     # Step 3: Fetch session data and spike times
