@@ -283,11 +283,13 @@ def master_function(session_number, output_dir='output', timesteps_per_frame=10,
     print("Updated version 3!")
     print("Initializing workflow...")
 
+    session = cache.get_session_data(session_number)
+
     filtered_data_path = os.path.join(output_dir, f'filtered_normalized_pickle_{session_number}_{timesteps_per_frame}.pkl')
     if os.path.exists(filtered_data_path):
         print(f"Session data for session number {session_number} and {timesteps_per_frame} timesteps per frame already been downloaded.")
         print(f"Total time elapsed: {time.time() - start_time:.2f} seconds")
-        return None
+        return session
 
     # Step 1: Create directory and manifest
     print("Creating directory and manifest path...")
@@ -303,7 +305,6 @@ def master_function(session_number, output_dir='output', timesteps_per_frame=10,
     
     print("Filtering valid spike times...")
     # Step 4: Filter valid spike times
-    session = cache.get_session_data(session_number)
     valid_spike_times = filter_valid_spike_times(session)
     
     print("Calculating bins and processing neurons...")
