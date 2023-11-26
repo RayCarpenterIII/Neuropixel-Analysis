@@ -323,7 +323,6 @@ def master_function(session_number, output_dir='output', timesteps_per_frame=10,
     # Step 8: Filter, save neurons, and return saved file name
     filtered_normalized_firing_rates = filter_and_save_neurons(normalized_firing_rates, highest_value, lowest_value, session_number, output_dir)
     
-    #TODO: Print time elapsed
     print(f"Total time elapsed: {time.time() - start_time:.2f} seconds")
     
     os.path.join(output_dir, f'filtered_normalized_pickle_{session_number}_{timesteps_per_frame}.pkl')
