@@ -14,9 +14,11 @@
 ├── model_predictions.ipynb    <- build and run model predictions
 ├── visualize_data.ipynb       <- visualize neural activity data
 ├── neural_image_testing.ipynb <- test creation of neural images
-├── ProcessData                <- directory for project data processing
+├── data                       <- directory for project data processing
     ├── load_processed_data.py <- load pre-processed data
     ├── processed              <- pull data from AllenSDK and pre-process
+├── models
+  ├── stgnn.py                 <- train and evaluate stgnn on input data        
 ├── test                       <- function testing directory 
 ```
 
