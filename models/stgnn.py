@@ -7,6 +7,19 @@ from torch.nn import Linear
 from torch_geometric.nn import GCNConv
 
 def prepare_data(df, edge_threshold=0.3, train_ratio=0.8):
+    """
+    Prepares input data for training and testing a model.
+
+    Args:
+        df (pandas.DataFrame): The input dataframe containing the data.
+        edge_threshold (float, optional): The correlation threshold for determining edges. Defaults to 0.3.
+        train_ratio (float, optional): The ratio of data to be used for training. Defaults to 0.8.
+
+    Returns:
+        train_data (torch_geometric.data.Data): The training data.
+        test_data (torch_geometric.data.Data): The testing data.
+        num_classes (int): The number of classes in the data.
+    """
     y = df['frame'].values
     X = df.drop(columns=['frame']).values
     num_classes = len(np.unique(y))
@@ -44,6 +57,17 @@ def prepare_data(df, edge_threshold=0.3, train_ratio=0.8):
     return train_data, test_data, num_classes
 
 def define_model(num_features, num_classes, conv_layers=[128, 64]):
+    """
+    Defines a graph neural network model.
+
+    Args:
+        num_features (int): Number of input features.
+        num_classes (int): Number of output classes.
+        conv_layers (list, optional): List of integers representing the number of output channels for each convolutional layer. Defaults to [128, 64].
+
+    Returns:
+        torch.nn.Module: The defined graph neural network model.
+    """
     class GNN(torch.nn.Module):
         def __init__(self, num_features, num_classes, conv_layers):
             super(GNN, self).__init__()
@@ -67,6 +91,20 @@ def define_model(num_features, num_classes, conv_layers=[128, 64]):
     return model
 
 def train_model(model, train_data, test_data, device, lr=0.01, epochs=50):
+    """
+    Trains input model using inputed training data and evaluates performance on the test data.
+
+    Args:
+        model (torch.nn.Module): The model to be trained.
+        train_data (torch.Tensor): The training data.
+        test_data (torch.Tensor): The test data.
+        device (torch.device): The device to be used for training and evaluation.
+        lr (float, optional): The learning rate for the optimizer. Defaults to 0.01.
+        epochs (int, optional): The number of training epochs. Defaults to 50.
+
+    Returns:
+        tuple: A tuple containing the trained model and a list of test accuracies at each epoch.
+    """
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     test_accuracies = []
 
@@ -88,6 +126,21 @@ def train_model(model, train_data, test_data, device, lr=0.01, epochs=50):
     return model, test_accuracies
 
 def evaluate_model(model, train_data, test_data, device):
+    """
+    Evaluate the performance of a model on test data
+    using Precision, Recall, F1 Score, Test Accuracy,
+    and ROC AUC.
+
+    Args:
+        model (torch.nn.Module): The model to evaluate.
+        train_data (torch.Tensor): The training data.
+        test_data (torch.Tensor): The test data.
+        device (torch.device): The device to run the evaluation on.
+
+    Returns:
+        dict: A dictionary containing the evaluation metrics, including precision, recall,
+              F1 score, test accuracy, and ROC AUC.
+    """
     model.eval()
     out_test = model(test_data.to(device))
     _, preds_test = torch.max(out_test, dim=1)
@@ -112,6 +165,20 @@ def evaluate_model(model, train_data, test_data, device):
     return metrics
 
 def run_gnn(df, edge_threshold=0.3, train_ratio=0.8, conv_layers=[128, 64], lr=0.01, epochs=50):
+    """
+    Runs a graph neural network (GNN) on the given dataframe.
+
+    Args:
+        df (pandas.DataFrame): The input dataframe containing the graph data.
+        edge_threshold (float, optional): The threshold for edge weights. Defaults to 0.3.
+        train_ratio (float, optional): The ratio of training data to total data. Defaults to 0.8.
+        conv_layers (list, optional): The number of units in each convolutional layer. Defaults to [128, 64].
+        lr (float, optional): The learning rate for training the model. Defaults to 0.01.
+        epochs (int, optional): The number of training epochs. Defaults to 50.
+
+    Returns:
+        dict: A dictionary containing the evaluation metrics of the trained model.
+    """
     train_data, test_data, num_classes = prepare_data(df, edge_threshold, train_ratio)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = define_model(train_data.num_features, num_classes, conv_layers).to(device)
