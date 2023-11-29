@@ -11,7 +11,8 @@
 ## Project Structure 
 ```
 ├── README.md                  <- description of project 
-├── stimulus_predictions.ipynb <- build and run model predictions
+├── model_predictions.ipynb    <- build and run model predictions
+├── visualize_data.ipynb       <- visualize neural activity data
 ├── neural_image_testing.ipynb <- test creation of neural images
 ├── ProcessData                <- directory for project data processing
     ├── load_processed_data.py <- load pre-processed data
