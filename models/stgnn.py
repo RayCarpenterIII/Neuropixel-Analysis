@@ -5,6 +5,7 @@ from torch_geometric.data import Data
 import torch.nn.functional as F
 from torch.nn import Linear
 from torch_geometric.nn import GCNConv
+from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score
 
 def prepare_data(df, edge_threshold=0.3, train_ratio=0.8):
     """
