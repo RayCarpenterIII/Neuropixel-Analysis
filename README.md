@@ -18,7 +18,8 @@
     ├── load_processed_data.py <- load pre-processed data
     ├── processed              <- pull data from AllenSDK and pre-process
 ├── models
-  ├── stgnn.py                 <- train and evaluate stgnn on input data        
+  ├── stgnn.py                 <- train and evaluate stgnn on input data
+  ├── static_stgnn.py          <- train, evaluate static stgnn    
 ├── test                       <- function testing directory 
 ```
 
