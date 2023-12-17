@@ -28,8 +28,6 @@ def create_directory_and_manifest(directory_name='output'):
     if os.path.exists(manifest_path):
         print("Using existing manifest.json file.")
     else:
-        with open(manifest_path, 'w') as f:
-            json.dump({}, f)  #Create an empty JSON file for manifest.json
         print("Creating a new manifest.json file.")
     
     return output_dir, manifest_path
@@ -73,7 +71,7 @@ def pick_session_and_pull_data(cache, session_number):
     return spike_times, stimulus_table
 
 
-def filter_valid_spike_times(session):
+def filter_valid_spike_times(spike_times, session):
     """
     Filter the valid spike times using invalid times from the session object.
     
@@ -83,17 +81,24 @@ def filter_valid_spike_times(session):
     Returns:
     dict: A dictionary containing the valid spike times.
     """
-    invalid_intervals = session.invalid_times
-    spike_times = session.spike_times
-    valid_spike_times = {}
+    # Access the invalid_times DataFrame
+    invalid_times = session.invalid_times
 
-    for neuron_id, times in spike_times.items():
-        valid = np.ones_like(times, dtype=bool)  # Start with all times as valid
+    # Function to check if a spike time is valid
+    def is_valid_time(spike_times, invalid_intervals):
+        invalid = np.zeros_like(spike_times, dtype=bool)
         for _, row in invalid_intervals.iterrows():
             start, end = row['start_time'], row['stop_time']
-            valid &= ~((times >= start) & (times <= end))  # Mark times within invalid intervals as not valid
-        
-        valid_spike_times[neuron_id] = times[valid]  # Store the valid times for this neuron
+            invalid |= (spike_times >= start) & (spike_times <= end)
+        return ~invalid
+    
+    # Filter the valid spike times
+    valid_spike_times = {}
+    with tqdm(total=len(spike_times), desc='Filtering valid spike times') as pbar:
+        for neuron, times in spike_times.items():
+            valid_mask = is_valid_time(times, session.invalid_times)
+            valid_spike_times[neuron] = times[valid_mask]
+            pbar.update(1)
 
     return valid_spike_times
 
@@ -138,7 +143,7 @@ def process_all_neurons(spike_times, image_start_times, image_end_times, total_b
     with concurrent.futures.ProcessPoolExecutor() as executor:
         # Use a list comprehension to map process_neuron_wrapper over the arguments
         spike_matrix = list(tqdm(executor.map(process_neuron_wrapper, args_list), total=len(spike_times), desc='Processing neurons'))
-    
+    print(f'Spike matrix size -> {np.shape(spike_matrix)}')
     return torch.stack(spike_matrix)
 
 
@@ -181,7 +186,7 @@ def save_and_count_spike_dataframe(spike_df, session_number, output_dir):
     nan_count = spike_df.isna().sum().sum()
     print(f"Number of NaN values in the DataFrame: {nan_count}")
     
-    file_name = f'spike_trains_with_stimulus_session_{session_number}.pkl'
+    file_name = f'spike_trains_with_stimulus_session_{session_number}_{timesteps_per_frame}.pkl'
     file_path = os.path.join(output_dir, file_name)
     with open(file_path, 'wb') as f:
         pickle.dump(spike_df, f)
@@ -260,21 +265,19 @@ def process_and_save_data(session, spike_times, session_number, output_dir, time
     print(f"Number of NaN values in the final DataFrame: {nan_count}")
     
     print("Data processing and saving complete.")
-    filtered_data_file = f'filtered_normalized_pickle_{session_number}.pkl'
+    filtered_data_file = f'filtered_normalized_pickle_{session_number}_{timesteps_per_frame}.pkl'
     return os.path.join(output_dir, filtered_data_file)
 
 
-def master_function(session_number, output_dir='output', timesteps_per_frame=10, highest_value=100, lowest_value=0):
+def master_function(session_number, output_dir='output', timesteps_per_frame=10):
     """
     Master function to execute the entire workflow from data extraction to saving.
-    
+
     Parameters:
     session_number (int): The session number.
     output_dir (str): The directory where data should be saved. Default is 'output'.
     timesteps_per_frame (int, optional): Number of timesteps per frame for binning. Default is 10.
-    highest_value (float, optional): Upper z-score threshold for filtering neurons. Default is 100.
-    lowest_value (float, optional): Lower z-score threshold for filtering neurons. Default is 0.
-    
+
     Returns:
     str: The name of the saved filtered data file.
     """
@@ -283,52 +286,61 @@ def master_function(session_number, output_dir='output', timesteps_per_frame=10,
     print("Updated version 3!")
     print("Initializing workflow...")
     
-    # Step 1: Create directory and manifest
+    # Define the full paths for the input files
+    spike_trains_file_path = os.path.join(output_dir, f'spike_trains_with_stimulus_session_{session_number}_{timesteps_per_frame}.pkl')
+    normalized_firing_rates_file_path = os.path.join(output_dir, f'normalized_firing_rates_{session_number}_{timesteps_per_frame}.pkl')
+
+    # Check if the files already exist
+    if os.path.exists(spike_trains_file_path) and os.path.exists(normalized_firing_rates_file_path):
+        print("Loading existing datasets...")
+        
+        # Load the spike trains dataset
+        with open(spike_trains_file_path, 'rb') as f:
+            spike_df = pickle.load(f)
+        print(f"Loaded spike trains dataset: {type(spike_df)}")
+
+        # Load the normalized firing rates dataset
+        with open(normalized_firing_rates_file_path, 'rb') as f:
+            normalized_firing_rates = pickle.load(f)
+        print(f"Loaded normalized firing rates dataset: {type(normalized_firing_rates)}")
+
+        print(f"Total time elapsed: {time.time() - start_time:.2f} seconds")
+        return spike_df, normalized_firing_rates
+
+    # Continue with data creation if the files do not exist
     print("Creating directory and manifest path...")
     output_dir, manifest_path = create_directory_and_manifest(directory_name=output_dir)
 
     print("Initializing EcephysProjectCache and session table...")
-    # Step 2: Initialize EcephysProjectCache and get session table
     cache, session_table = create_cache_get_session_table(manifest_path)
     session = cache.get_session_data(session_number)
 
-    #Check if session data already exists 
-    filtered_data_path = os.path.join(output_dir, f'filtered_normalized_pickle_{session_number}_{timesteps_per_frame}.pkl')
-    if os.path.exists(filtered_data_path):
-        print(f"Session data for session number {session_number} and {timesteps_per_frame} timesteps per frame already been downloaded.")
-        print(f"Total time elapsed: {time.time() - start_time:.2f} seconds")
-        return session
-    
     print("Fetching session data and spike times...")
-    # Step 3: Fetch session data and spike times
     spike_times, stimulus_table = pick_session_and_pull_data(cache, session_number)
-    
+
     print("Filtering valid spike times...")
-    # Step 4: Filter valid spike times
-    valid_spike_times = filter_valid_spike_times(session)
-    
+    valid_spike_times = filter_valid_spike_times(spike_times, session)
+
     print("Calculating bins and processing neurons...")
-    # Step 5: Calculate bins and process all neurons
     image_start_times, image_end_times, total_bins, bins_per_image = calculate_bins(stimulus_table, timesteps_per_frame)
     spike_matrix = process_all_neurons(valid_spike_times, image_start_times, image_end_times, total_bins, bins_per_image)
-    
+
     print("Preparing spike DataFrame...")
-    # Step 6: Create and prepare spike DataFrame
     spike_df = create_and_prepare_spike_dataframe(spike_matrix, valid_spike_times, stimulus_table)
-    
+
     print("Normalizing firing rates...")
-    # Step 7: Normalize firing rates
     normalized_firing_rates = normalize_firing_rates(spike_df)
-    
-    print("Filtering neurons, returning output...")
-    # Step 8: Filter, save neurons, and return saved file name
-    filtered_normalized_firing_rates = filter_and_save_neurons(normalized_firing_rates, highest_value, lowest_value, session_number, output_dir)
-    
+
+    print("Save raw and normalized firing rate dataframes as a pickle file.")
+    with open(spike_trains_file_path, 'wb') as f:
+        pickle.dump(spike_df, f)
+    with open(normalized_firing_rates_file_path, 'wb') as f:
+        pickle.dump(normalized_firing_rates, f)
+
     print(f"Total time elapsed: {time.time() - start_time:.2f} seconds")
     
-    os.path.join(output_dir, f'filtered_normalized_pickle_{session_number}_{timesteps_per_frame}.pkl')
-    
-    return session
+    return spike_df, normalized_firing_rates
+
 
 if __name__ == "__main__":
 
