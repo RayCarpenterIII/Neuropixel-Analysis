@@ -6,8 +6,6 @@
   
   To test this we will compare the prediction accuracies of different models. Some do not utilize spatial information, some use a correlation matrix as the spatial information, and our proposed model utilizes a set of adjacency matrices that are produced to show the direction between each neuron for each image. 
 
-- **Program in works:** https://github.com/RayCarpenterIII/Neuropixel-Analysis/blob/refactor-repository/stimulus_predictions.ipynb
-
 ## Project Structure 
 ```
 ├── README.md                  <- description of project 
