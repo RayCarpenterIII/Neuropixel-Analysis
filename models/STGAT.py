@@ -99,31 +99,42 @@ class STGAT(nn.Module):
     A type of spatio-temporal graph neural network that uses a graph attention network as the spatial layer and an LSTM as the temporal layer.
     
     Parameters:
-        - in_channels (int): The number of input features for each vertex/node in the graph.
+        - spatial_in_features(int): Number of features in the spatial layer. 
         - spatial_hidden_dim (int): The dimension of the hidden layer within the GAT.
         - spatial_out_features (int): The number of output features for each vertex after processing.
+        - num_classes (int): The number of unique classes in the dataset. Determines the number of different adjacency matrices to be learned.
+        - num_nodes (int): The number of nodes in the graph. This specifies the size of each square adjacency matrix.
+        - edge_threshold(int): Sets the edge threshold.
+        - temporal_input_layer (int): The number of input features for the temporal layer. 
+        - temporal_hidden_layer (int): The size of the temporal hidden layer.
+        - temporal_layer_dimension (int): Number of layers in the temporal model. In this case it is our LSTM
+        - temporal_output_dim (): The size of the output layer for the temporal dimension. In this case it is our model's output. It should be of length Y. 
         - x (Tensor): The node features tensor, with shape (B, N, F), where B is the batch size, N is the number of nodes, and F is the number of features per node.
-        - edge_index (Tensor): The edge index tensor, representing the connections between nodes in the graph.
+        - class_idx (Tensor): A tensor containing the indices of the classes for which the adjacency matrices are to be generated. Each index corresponds to one class.
     
     Returns: 
-    - 
+        - A prediction per interval. (Tensor)
     '''
-    def __init__(self, spatial_in_features, spatial_hidden_dim, spatial_out_features, num_classes, num_nodes, edge_threshold, lstm_input_dim, hidden_dim, layer_dim, output_dim):
+    def __init__(self, spatial_in_features, spatial_hidden_dim, spatial_out_features, num_classes, num_nodes, edge_threshold, temporal_input_layer, temporal_hidden_layer, temporal_layer_dimension, temporal_output_dim):
         super(STGAT, self).__init__()
         self.spatial_in_features = spatial_in_features  
         self.dynamic_adjacency = DynamicAdaptiveAdjacencyLayer(num_classes, num_nodes, edge_threshold)
         self.gat_layer = TrainableGATLayer(self.spatial_in_features, spatial_hidden_dim, spatial_out_features)
         self.num_nodes = num_nodes
-        self.lstm = LSTMModel(lstm_input_dim, hidden_dim, layer_dim, output_dim)
+        self.lstm = LSTMModel(temporal_input_layer, temporal_hidden_layer, temporal_layer_dimension, temporal_output_dim)
 
     def forward(self, X, class_idx):
         spatial_out = []
-        B, T, NF = X.size()
+        B, T, N, F = X.size()  
+        X_reshaped = X.view(B, T, -1)  # Reshape to (B, T, N*F)
+
         edge_index = self.dynamic_adjacency(class_idx)
         for t in range(T):
-            x_t = X[:, t, :].view(B, self.num_nodes, self.spatial_in_features)
+            x_t = X_reshaped[:, t, :]  
+            x_t = x_t.view(B, self.num_nodes, -1)  # Reshape back to (B, N, NF)
             spatial_out_t = self.gat_layer(x_t, edge_index)
             spatial_out.append(spatial_out_t)
+
         spatial_out = torch.stack(spatial_out, dim=1)
         spatial_out = spatial_out.view(B, T, -1)
         out = self.lstm(spatial_out)
