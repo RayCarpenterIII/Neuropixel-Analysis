@@ -15,6 +15,31 @@ Directed edges can be given to or trained from the model.
 Note: Currently this file only trains the adjacency matrices for the edges and cannot accept pre-defined matrices. 
 '''
 
+class DynamicAdaptiveAdjacencyLayer(nn.Module):
+    '''
+    Creates a directed adjacency matrix for each class and updates it through backpropagation using the ST-GAT model. 
+    The matrix is pushed through a sigmoid function to shrink the 
+
+    Parameters:
+        - num_classes (int): The number of unique classes in the dataset. Determines the number of different adjacency matrices to be learned.
+        - num_nodes (int): The number of nodes in the graph. This specifies the size of each square adjacency matrix.
+        - class_idx (Tensor): A tensor containing the indices of the classes for which the adjacency matrices are to be generated. Each index corresponds to one class.
+        - edge_threshold(int): Sets the edge threshold.
+
+    Returns:
+        - Tensor: The edge index tensor for the specified class. 
+    '''
+    def __init__(self, num_classes, num_nodes, edge_threshold):
+        super(DynamicAdaptiveAdjacencyLayer, self).__init__()
+        self.V_Adap = nn.Parameter(torch.randn(num_classes, num_nodes, num_nodes))
+        self.activation = nn.Sigmoid()
+        self.edge_threshold = edge_threshold
+
+    def forward(self, class_idx):
+        A_Adap = self.activation(self.V_Adap[class_idx]) / self.V_Adap.size(1)
+        edge_index = (A_Adap > self.edge_threshold).nonzero(as_tuple=False).t()
+        return edge_index
+        
 class TrainableGATLayer(nn.Module):
     '''
     The spatial layer of a Spatio-Temporal Graph Neural Network (ST-GNN). This layer uses a Graph Attention Network (GAT) to update the node and vertex features of a directed graph.
@@ -69,31 +94,6 @@ class LSTMModel(nn.Module):
         out = self.fc(out[:, -1, :])
         return out 
 
-class DynamicAdaptiveAdjacencyLayer(nn.Module):
-    '''
-    Creates a directed adjacency matrix for each class and updates it through backpropagation using the ST-GAT model. 
-    The matrix is pushed through a sigmoid function to shrink the 
-
-    Parameters:
-        - num_classes (int): The number of unique classes in the dataset. Determines the number of different adjacency matrices to be learned.
-        - num_nodes (int): The number of nodes in the graph. This specifies the size of each square adjacency matrix.
-        - class_idx (Tensor): A tensor containing the indices of the classes for which the adjacency matrices are to be generated. Each index corresponds to one class.
-        - edge_threshold(int): Sets the edge threshold.
-
-    Returns:
-        - Tensor: The edge index tensor for the specified class. 
-    '''
-    def __init__(self, num_classes, num_nodes, edge_threshold):
-        super(DynamicAdaptiveAdjacencyLayer, self).__init__()
-        self.V_Adap = nn.Parameter(torch.randn(num_classes, num_nodes, num_nodes))
-        self.activation = nn.Sigmoid()
-        self.edge_threshold = edge_threshold
-
-    def forward(self, class_idx):
-        A_Adap = self.activation(self.V_Adap[class_idx]) / self.V_Adap.size(1)
-        edge_index = (A_Adap > self.edge_threshold).nonzero(as_tuple=False).t()
-        return edge_index
-        
 class STGAT(nn.Module):
     '''
     A type of spatio-temporal graph neural network that uses a graph attention network as the spatial layer and an LSTM as the temporal layer.
