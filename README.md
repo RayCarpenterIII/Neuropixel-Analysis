@@ -2,9 +2,9 @@
 # Neuropixel Analysis 
 This project aims to predict the visual stimulus presented to mice based on the firing rates of their neurons.
 
-By utilizing a Spatial-Temporal Graph Neural Network we will train an adjacency matrix that may pick up on the directed functional Connectomics between the single neurons when the mouse is shown different images.
+By utilizing a Spatial-Temporal Graph Neural Network, we train an adjacency matrix that may pick up on the directed functional Connectomics between the single neurons when the mouse is shown different images.
 
-To test this we will compare the prediction accuracies of different models. Some do not utilize spatial information, some use a correlation matrix as the spatial information, and our proposed model utilizes adjacency matrices produced to show the direction of connectivity between each neuron for each image.
+To test this we compare the prediction accuracies of different models trained on the same mouse. Some do not utilize spatial information, some use a correlation matrix as the spatial information, and our proposed model utilizes adjacency matrices produced to show the direction of connectivity between each neuron for each image.
 
 ## Project Structure 
 ```
