@@ -1,10 +1,12 @@
 
 # Neuropixel Analysis 
-This project aims to predict the visual stimulus presented to mice based on the firing rates of their neurons.
+This project aims to predict the visual stimulus presented to mice based on the firing rates of their neurons and produce adjacency matrices that describe the directed functional connectomics between single neurons.
 
-By utilizing a Spatial-Temporal Graph Neural Network, we train an adjacency matrix that may pick up on the directed functional Connectomics between the single neurons when the mouse is shown different images.
+To do this, we test an array of statistical, ML, and DL algorithms to test which best predicts a mouse's visual stimuli given open-sourced Neuropixel data pulled from the API by the Allen Brain Institute.
 
-To test this we compare the prediction accuracies of different models trained on the same mouse. Some do not utilize spatial information, some use a correlation matrix as the spatial information, and our proposed model utilizes adjacency matrices produced to show the direction of connectivity between each neuron for each image.
+Using a Spatial-Temporal Graph Neural Network, we can train adjacency matrices that may pick a representation of the directed functional Connectomics between single neurons at a specific class, interval, or across time. This model takes in temporal graph data with node and edge information, makes predictions, and can update the edge information through backpropagation. This model can be used on brain data at the micro, meso, and macro level. It can also be used on data that has a graph structure and temporal components. This can be implemented with traffic data and social network data. 
+
+Our current models are able to achieve a prediction accuracy of up to 95%. We are implementing Ray Tune and Pytorch for automatic model optimization and parallel computing while recording our run data at Wandb.ai. 
 
 ## Project Structure 
 ```
