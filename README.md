@@ -1,12 +1,17 @@
 
 # Neuropixel Analysis 
-This project aims to predict the visual stimulus presented to mice based on the firing rates of their neurons and produce adjacency matrices that describe the directed functional connectomics between single neurons.
+Our project aims to predict visual stimuli presented to mice based on the firing rates of single neurons within their visual cortex by surveying how different machine and deep learning models predict stimuli based on neural activity at the micro-scale.
 
-To do this, we test an array of statistical, ML, and DL algorithms to test which best predicts a mouse's visual stimuli given open-sourced Neuropixel data pulled from the API by the Allen Brain Institute.
+We created a pipeline that pulls the data from an open-sourced project by the Allen Brain Observatory, visualizes it, automatically tunes deep learning models on the data, and builds an
+adjacency matrix representing the functional connectomics between single neurons. 
 
-Using a Spatial-Temporal Graph Neural Network, we can train adjacency matrices that may pick a representation of the directed functional Connectomics between single neurons at a specific class, interval, or across time. This model takes in temporal graph data with node and edge information, makes predictions, and can update the edge information through backpropagation. This model can be used on brain data at the micro, meso, and macro level. It can also be used on data that has a graph structure and temporal components. This can be implemented with traffic data and social network data. 
+We've benchmarked several statistical, machine learning, and deep learning techniques to predict what the mouse sees. Given 118 different images of natural scenes and around 2,000 neurons per mouse, we have been able to predict the correct scene with 95% accuracy using a type of Spatio-Temporal Graph Neural Network (ST-GNN) called a Spatio-Temporal Graph Attention Network(ST-GAT). In addition to having the highest prediction accuracy, this model can produce a directed adjacency matrix between nodes that represents how one neuron may affect another through backpropagation. The ST-GAT architecture and its variants are outlined in the figure below. The code also allows for the leveraging of a distributed system. We are currently using the Longleaf Computing Cluster at UNC.
 
-Our current models are able to achieve a prediction accuracy of up to 95%. We are implementing Ray Tune and Pytorch for automatic model optimization and parallel computing while recording our run data at Wandb.ai. 
+<p align="center">
+  <img src="https://github.com/RayCarpenterIII/Neuropixel-Analysis/assets/106690201/6207ea50-61c8-44c7-8da7-29b8fa157cf0" width="60%">
+</p>
+
+We are implementing Ray Tune and Pytorch for automatic model optimization and parallel computing while recording our run data at Wandb.ai. 
 
 ## Project Structure 
 ```
