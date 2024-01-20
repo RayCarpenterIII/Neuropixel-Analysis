@@ -2,6 +2,7 @@ import random
 import numpy as np
 from filelock import FileLock
 import tempfile
+import ray
 from ray import train, tune
 from ray.air.integrations.wandb import WandbLoggerCallback, setup_wandb
 from ray.tune.schedulers import AsyncHyperBandScheduler
@@ -12,7 +13,7 @@ import torch.optim as optim
 import wandb
 from ray.tune.schedulers import ASHAScheduler
 from ray.tune import CLIReporter
-from STGAT import * 
+from models.STGAT import * 
 import ray
 import os
 import pickle
@@ -22,6 +23,9 @@ from sklearn.preprocessing import LabelEncoder
 from torch.optim import Adam
 from torch import nn
 import time
+from models.PCR import * 
+from models.NN import *
+
 
 class ModelTrainer:
     def __init__(self, param_space):
@@ -29,13 +33,44 @@ class ModelTrainer:
         self.num_samples = param_space['num_samples']
         self.wandb_project = param_space['wandb_project']
         self.wandb_api_key = param_space['wandb_api_key']
+        self.computed_params = {}
+
+    def initialize_model(self, config, devic):
+        model_name = config.get("Architecture")
+        params = self.computed_params
+        num_nodes, num_classes, spatial_in_features, lstm_input_dim, temporal_hidden_dim, temporal_layer_dimension, num_epochs, temporal_output_dim = (
+            params['num_nodes'], params['num_classes'], params['spatial_in_features'], 
+            params['lstm_input_dim'], params['temporal_hidden_dim'], params['temporal_layer_dimension'], 
+            params['num_epochs'], params['temporal_output_dim']
+        )
+        
+        if model_name == 'ST-GAT':
+            model = STGAT(spatial_in_features, config["spatial_hidden_dim"],    config["spatial_out_features"], 
+                      num_classes, num_nodes, config["edge_threshold"], lstm_input_dim, 
+                      temporal_hidden_dim, temporal_layer_dimension, temporal_output_dim)
+            return model
+        elif model_name == 'LSTM':
+            model = LSTM(input_dim, config["spatial_hidden_dim"], layer_dim, ouput_dim)
+            return model
+
+        elif model_name == 'PCR':
+            model = PCRModel(n_components=config.get("n_components", 10))
+            return model
+        
+        elif model_name == 'NN':
+            model = NNModel(input_dim, config["hidden_dim"], config["output_dim"])
+            return model
+        
+        # We can add more elif blocks for other models
+        else:
+            raise ValueError(f"Unknown model architecture: {model_name}")
         
     def train_model(self, config):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         wandb = setup_wandb(config, project=self.wandb_project, api_key=self.wandb_api_key)
         should_checkpoint = config.get("should_checkpoint", False)
 
-        from data_splitter import DataSplitter
+        from data_processors.data_splitter import DataSplitter
         mouse_number = config['mouse_number']
         timesteps = config['timesteps']
 
@@ -70,26 +105,28 @@ class ModelTrainer:
         epochs_no_improve = 0
 
         # Parameters given through data.
-        #num_nodes = config['num_nodes']
-        num_nodes = np.shape(X)[1] # N from (B, T, N, F)
-        num_classes = len(np.unique(y_train))  # Unique y values
-        num_time_steps = X_train.shape[1] # T from (B, T, N, F)
-        label_encoder = LabelEncoder().fit(y_train.ravel())
-        temporal_output_dim = int(len(np.unique(y_train))) # Unique y values.
-        spatial_in_features = X_train.shape[3] # F from (B, T, N, F)
-        lstm_input_dim = spatial_in_features * num_nodes 
-        edge_index = torch.tensor([[i, j] for i in range(num_nodes) for j in range(num_nodes) if i != j], dtype=torch.long).t().contiguous().to(device)
-        temporal_output_dim = int(len(np.unique(y_train))) # Unique y values.
-        edge_index = torch.tensor([[i, j] for i in range(num_nodes) for j in range(num_nodes) if i != j], dtype=torch.long).t().contiguous().to(device)
-        temporal_hidden_dim = int(config["temporal_hidden_dim"])
-        temporal_layer_dimension = int(config["temporal_layer_dimension"])
-        num_epochs = int(config['num_epochs'])
+        self.computed_params['num_nodes'] = np.shape(X)[1]
+        self.computed_params['num_classes'] = len(np.unique(y_train))
+        self.computed_params['num_time_steps'] = X_train.shape[1]
+        self.computed_params['spatial_in_features'] = X_train.shape[3]
+        self.computed_params['lstm_input_dim'] = self.computed_params['spatial_in_features'] * self.computed_params['num_nodes']
+        self.computed_params['edge_index'] = torch.tensor([[i, j] for i in range(self.computed_params['num_nodes']) for j in range(self.computed_params['num_nodes']) if i != j], dtype=torch.long).t().contiguous().to(device)
+        self.computed_params['temporal_output_dim'] = int(len(np.unique(y_train)))
+        self.computed_params['temporal_hidden_dim'] = int(config["temporal_hidden_dim"])
+        self.computed_params['temporal_layer_dimension'] = int(config["temporal_layer_dimension"])
+        self.computed_params['num_epochs'] = int(config['num_epochs'])
+        self.computed_params['label_encoder'] = LabelEncoder().fit(y_train.ravel())
+        
+        params = self.computed_params
+        num_nodes, num_classes, spatial_in_features, lstm_input_dim, temporal_hidden_dim, temporal_layer_dimension, num_epochs, temporal_output_dim = (
+            params['num_nodes'], params['num_classes'], params['spatial_in_features'], 
+            params['lstm_input_dim'], params['temporal_hidden_dim'], params['temporal_layer_dimension'], 
+            params['num_epochs'], params['temporal_output_dim']
+        )
 
 
         # Model initialization with hyperparameters from config
-        model = STGAT(spatial_in_features, config["spatial_hidden_dim"], config["spatial_out_features"], 
-                      num_classes, num_nodes, config["edge_threshold"], lstm_input_dim, 
-                      temporal_hidden_dim, temporal_layer_dimension, temporal_output_dim)
+        model = self.initialize_model(config, device)
         model.to(device)
 
         # Loss and Optimizer with learning rate from config
@@ -108,11 +145,13 @@ class ModelTrainer:
             for features, labels in train_loader:
                 features, labels = features.to(device), labels.to(device)
                 labels = labels.squeeze().long()
-                class_idx = label_encoder.transform(labels.cpu().numpy())[0]  # Transform labels to class indices
+                
+                # Correctly access label_encoder from self.computed_params
+                class_idx = self.computed_params['label_encoder'].transform(labels.cpu().numpy()) # Transform labels to class indices
                 class_idx = torch.tensor(class_idx, dtype=torch.long).to(device)
                 outputs = model(features, class_idx)
                 loss = criterion(outputs, labels)
-
+                
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
@@ -173,7 +212,7 @@ class ModelTrainer:
     
     def execute_tuning(self):
         scheduler = ASHAScheduler(max_t=100, grace_period=5, reduction_factor=2, brackets=3)
-        resources_per_trial = {"cpu": 4, "gpu": 1}
+        resources_per_trial = {"cpu": 4, "gpu": 1}    #Pass as parameter instead 
         hebo = HEBOSearch(metric="test_acc", mode='max')
 
         tuner = tune.Tuner(
