@@ -15,17 +15,20 @@ We are implementing Ray Tune and Pytorch for automatic model optimization and pa
 
 ## Project Structure 
 ```
-├── README.md                  <- description of project 
-├── model_predictions.ipynb    <- build and run model predictions
-├── visualize_data.ipynb       <- visualize neural activity data
-├── neural_image_testing.ipynb <- test creation of neural images
-├── data                       <- directory for project data processing
+├── data_processors            <- directory for project data processing
+    ├── data_splitter.py       <- process tables of predictors
     ├── load_processed_data.py <- load pre-processed data
-    ├── processed              <- pull data from AllenSDK and pre-process
+    ├── pull_and_process_data  <- pull data from AllenSDK and pre-process
 ├── models
   ├── stgnn.py                 <- train and evaluate stgnn on input data
-  ├── static_stgnn.py          <- train, evaluate static stgnn    
-├── test                       <- function testing directory 
+  ├── static_stgnn.py          <- train, evaluate static stgnn
+├── pictures                   <- flow charts for ST-GAT and ST-GNN  
+├── test                       <- function testing directory
+├── README.md                  <- description of project 
+├── model_predictions.ipynb    <- build and run model predictions
+├── neural_image_testing.ipynb <- test creation of neural images
+├── requirements.txt           <- install dependencies (wip)
+├── visualize_data.ipynb       <- visualize neural activity data
 ```
 
 ## Data 
