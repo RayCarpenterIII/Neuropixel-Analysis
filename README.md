@@ -1,6 +1,6 @@
 
 # Neuropixel Analysis 
-Our project aims to predict visual stimuli presented to mice based on the firing rates of single neurons within their visual cortex by surveying how different machine and deep learning models predict stimuli based on neural activity at the micro-scale.
+Our project aims to predict visual stimuli presented to mice based on the firing rates of single neurons within their visual cortex by surveying how different machine and deep learning models predict stimuli based on neural activity at the micro-scale. This project is currently being worked on in an OnDemand Jupyter notebook connected to UNC Research computing's longleaf cluster.
 
 We created a pipeline that pulls the data from an open-sourced project by the Allen Brain Observatory, visualizes it, automatically tunes deep learning models on the data, and builds an
 adjacency matrix representing the functional connectomics between single neurons. 
