@@ -74,7 +74,7 @@ class TransformerTemporalLayer(nn.Module):
         # x: (batch_size, time_steps, flattened_nodes_and_features)
         transformer_out = self.transformer_encoder(x)
         out = self.fc(transformer_out[:, -1, :])  # Use the output of the last time step
-        return outv
+        return out
 
 class FullyDynamicSTGNN(nn.Module):
     def __init__(self, spatial_in_features, spatial_hidden_dim, num_classes, num_time_steps, num_nodes, transformer_input_dim, num_heads, transformer_layers, output_dim, spatial_out_features):
