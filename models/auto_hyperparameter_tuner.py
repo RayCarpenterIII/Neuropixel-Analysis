@@ -13,7 +13,6 @@ import torch.optim as optim
 import wandb
 from ray.tune.schedulers import ASHAScheduler
 from ray.tune import CLIReporter
-from models.STGAT import * 
 import ray
 import os
 import pickle
@@ -23,9 +22,13 @@ from sklearn.preprocessing import LabelEncoder
 from torch.optim import Adam
 from torch import nn
 import time
+from torch_geometric.utils import add_self_loops
+from torch.cuda.amp import GradScaler, autocast
+
+from models.STGAT import * 
 from models.PCR import * 
 from models.NN import *
-
+from models.STTR import *
 
 class ModelTrainer:
     def __init__(self, param_space):
@@ -61,6 +64,17 @@ class ModelTrainer:
             model = NNModel(input_dim, config["hidden_dim"], config["output_dim"])
             return model
         
+        elif model_name == 'Transformer':
+            if model_name == 'Transformer':
+                model = TransformerTemporalLayer(
+                    original_input_dim=config["original_input_dim"],
+                    transformer_input_dim=config["transformer_input_dim"],  
+                    num_heads=config["num_heads"],
+                    num_layers=config["num_layers"],
+                    output_dim=config["output_dim"]
+                )
+        return model
+        
         # We can add more elif blocks for other models
         else:
             raise ValueError(f"Unknown model architecture: {model_name}")
@@ -71,10 +85,13 @@ class ModelTrainer:
         should_checkpoint = config.get("should_checkpoint", False)
 
         from data_processors.data_splitter import DataSplitter
+        
         mouse_number = config['mouse_number']
         timesteps = config['timesteps']
 
-        spike_trains_file_path = f'/nas/longleaf/home/rayrayc/output/spike_trains_with_stimulus_session_{mouse_number}_{timesteps}.pkl'
+        spike_trains_file_path = config['file_path']
+        #spike_trains_file_path = '/proj/STOR/pipiras/Neuropixel/output/spike_trains_with_stimulus_session_732592105_10.pkl'
+
         #spike_trains_file_path = f'/nas/longleaf/home/rayrayc/output/spike_trains_with_stimulus_session_719161530_10.pkl'
 
         with open(spike_trains_file_path, 'rb') as f:
@@ -111,6 +128,9 @@ class ModelTrainer:
         self.computed_params['spatial_in_features'] = X_train.shape[3]
         self.computed_params['lstm_input_dim'] = self.computed_params['spatial_in_features'] * self.computed_params['num_nodes']
         self.computed_params['edge_index'] = torch.tensor([[i, j] for i in range(self.computed_params['num_nodes']) for j in range(self.computed_params['num_nodes']) if i != j], dtype=torch.long).t().contiguous().to(device)
+        print("Shape of edge_index:", self.computed_params['edge_index'].shape)
+        print("Content of edge_index:", self.computed_params['edge_index'])
+
         self.computed_params['temporal_output_dim'] = int(len(np.unique(y_train)))
         self.computed_params['temporal_hidden_dim'] = int(config["temporal_hidden_dim"])
         self.computed_params['temporal_layer_dimension'] = int(config["temporal_layer_dimension"])
@@ -125,42 +145,46 @@ class ModelTrainer:
         )
 
 
-        # Model initialization with hyperparameters from config
         model = self.initialize_model(config, device)
         model.to(device)
-
-        # Loss and Optimizer with learning rate from config
+    
         criterion = nn.CrossEntropyLoss()
         optimizer = Adam(model.parameters(), lr=config["lr"])
-
+    
+        scaler = GradScaler()  # Initialize the GradScaler for AMP
+    
         # Training Loop
         highest_test_acc = 0
-        for epoch in range(num_epochs):        
-            start_time = time.time()  # Start time of the epoch
-            model.train()  # Set the model to training mode
-            running_loss = 0
+        for epoch in range(num_epochs):
+            model.train()
+            running_loss = 0  # Initialize running_loss before the loop
             correct_train = 0
             total_train = 0
-
+        
             for features, labels in train_loader:
                 features, labels = features.to(device), labels.to(device)
                 labels = labels.squeeze().long()
-                
-                # Correctly access label_encoder from self.computed_params
-                class_idx = self.computed_params['label_encoder'].transform(labels.cpu().numpy()) # Transform labels to class indices
+        
+                # Transform labels to class indices
+                class_idx = self.computed_params['label_encoder'].transform(labels.cpu().numpy())
                 class_idx = torch.tensor(class_idx, dtype=torch.long).to(device)
+        
+                # Forward pass with class_idx
                 outputs = model(features, class_idx)
+        
+                # Compute loss, backward pass, and optimization
                 loss = criterion(outputs, labels)
-                
                 optimizer.zero_grad()
-                loss.backward()
+                loss.backward(retain_graph=True)
                 optimizer.step()
-
-                running_loss += loss.item()
+        
+                running_loss += loss.item()  # Update running_loss
                 _, predicted = torch.max(outputs.data, 1)
                 total_train += labels.size(0)
                 correct_train += (predicted == labels).sum().item()
-
+                features.cpu()
+                labels.cpu()
+        
             train_acc = 100 * correct_train / total_train
 
             model.eval()  # Set the model to evaluation mode
@@ -170,12 +194,15 @@ class ModelTrainer:
                 for features, labels in test_loader:
                     features, labels = features.to(device), labels.to(device)
                     labels = labels.squeeze().long()
-                    class_idx = label_encoder.transform(labels.cpu().numpy())[0] # Transform labels to class indices
+                    class_idx = self.computed_params['label_encoder'].transform(labels.cpu().numpy())[0] # Transform labels to class indices
                     class_idx = torch.tensor(class_idx, dtype=torch.long).to(device)
                     outputs = model(features, class_idx) # Call the model with the features and class index
                     _, predicted = torch.max(outputs.data, 1)
                     total_test += labels.size(0)
                     correct_test += (predicted == labels).sum().item()
+                    
+                    features.cpu()
+                    labels.cpu()
 
             test_acc = 100 * correct_test / total_test
 
@@ -212,7 +239,7 @@ class ModelTrainer:
     
     def execute_tuning(self):
         scheduler = ASHAScheduler(max_t=100, grace_period=5, reduction_factor=2, brackets=3)
-        resources_per_trial = {"cpu": 4, "gpu": 1}    #Pass as parameter instead 
+        resources_per_trial = {"cpu": 16, "gpu": 1}    #Pass as parameter instead 
         hebo = HEBOSearch(metric="test_acc", mode='max')
 
         tuner = tune.Tuner(
