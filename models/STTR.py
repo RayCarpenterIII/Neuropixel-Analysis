@@ -62,18 +62,23 @@ class TrainableGATLayer(nn.Module):
 
 
 class TransformerTemporalLayer(nn.Module):
-    def __init__(self, input_dim, num_heads, num_layers, output_dim):
+    def __init__(self, original_input_dim, transformer_input_dim, num_heads, num_layers, output_dim):
         super(TransformerTemporalLayer, self).__init__()
+        # Linear layer to adjust dimension
+        self.adjust_dim = nn.Linear(original_input_dim, transformer_input_dim)
+        
         self.transformer_encoder_layer = nn.TransformerEncoderLayer(
-            d_model=input_dim, nhead=num_heads, batch_first=True)
+            d_model=transformer_input_dim, nhead=num_heads, batch_first=True)
         self.transformer_encoder = nn.TransformerEncoder(
             self.transformer_encoder_layer, num_layers=num_layers)
-        self.fc = nn.Linear(input_dim, output_dim)
-
+        
+        # Final fully connected layer
+        self.fc = nn.Linear(transformer_input_dim, output_dim)
+        
     def forward(self, x):
-        # x: (batch_size, time_steps, flattened_nodes_and_features)
+        x = self.adjust_dim(x)  # Adjust the input dimension
         transformer_out = self.transformer_encoder(x)
-        out = self.fc(transformer_out[:, -1, :])  # Use the output of the last time step
+        out = self.fc(transformer_out)  # Use the output of the last time step
         return out
 
 class FullyDynamicSTGNN(nn.Module):
