@@ -1,3 +1,4 @@
+
 import random
 import numpy as np
 from filelock import FileLock
@@ -53,14 +54,9 @@ class ModelTrainer:
     
         if model_name == 'Static_STGAT':
             model = Static_STGAT(spatial_in_features, config["spatial_hidden_dim"], config["spatial_out_features"],
-                     num_classes, num_nodes, config["edge_threshold"], temporal_hidden_dim, 
-                     temporal_layer_dimension)
-            return model
-            
-        elif model_name == 'Static_STGAT':
-            model = Static_STGAT(spatial_in_features, config["spatial_hidden_dim"], config["spatial_out_features"],
                                  num_classes, num_nodes, config["edge_threshold"], temporal_hidden_dim, 
-                                 temporal_layer_dimension)
+                                 temporal_layer_dimension, config["graph_batch_size"])
+            self.graph_optimizer = Adam([model.V_Adap], lr=config["graph_lr"])  # Define the graph_optimizer attribute
             return model
         
         elif model_name == 'LSTM':
@@ -177,13 +173,17 @@ class ModelTrainer:
             # Initialize tqdm with manual control by setting mininterval to a large number
             progress_bar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{num_epochs}', mininterval=1e9)
         
+            accumulation_steps = config["accumulation_steps"]  # Number of steps to accumulate gradients
+            optimizer.zero_grad()  # Reset gradients before the inner loop
+            
             for batch_idx, (features, labels) in enumerate(train_loader):
                 features, labels = features.to(device), labels.to(device)
                 labels = labels.squeeze().long()
         
                 # Generate the dynamic adjacency matrix for the current batch
-                edge_index = model.dynamic_adjacency(model.V_Adap).to(device)
-        
+                V_Adap_batch = model.V_Adap.expand(features.shape[0], -1, -1)  # Expand V_Adap to match batch size
+                edge_index, edge_attr = model.dynamic_adjacency(V_Adap_batch)
+                edge_index, edge_attr = edge_index.to(device), edge_attr.to(device)   
                 # Transform labels to class indices
                 class_idx = self.computed_params['label_encoder'].transform(labels.cpu().numpy())
                 class_idx = torch.tensor(class_idx, dtype=torch.long).to(device)
@@ -193,8 +193,10 @@ class ModelTrainer:
         
                 # Compute loss, backward pass, and optimization
                 loss = criterion(outputs, labels)
-                optimizer.zero_grad()
-                loss.backward(retain_graph=True)
+                loss = loss / accumulation_steps  # Scale the loss to account for accumulation
+                self.graph_optimizer.zero_grad()
+                loss.backward()
+                self.graph_optimizer.step()
                 optimizer.step()
         
                 running_loss += loss.item()  # Update running_loss
@@ -209,7 +211,9 @@ class ModelTrainer:
                 if batch_idx % update_interval == 0 or batch_idx == total_batches - 1:
                     progress_bar.update(batch_idx - progress_bar.n)  # Update progress bar to the current batch index
                     progress_bar.set_postfix({'Loss': running_loss / (batch_count + 1), 'Train Acc': correct_train / total_train * 100})
-        
+                    sliver_indices, sliver_weights = model.dynamic_adjacency.get_edge_sliver(model.V_Adap)
+                    print("Weights:", sliver_weights)
+
             # Close the progress bar at the end of the epoch
             progress_bar.close()
         
@@ -279,9 +283,12 @@ class ModelTrainer:
                     print(f"Early stopping triggered at epoch {epoch+1}")
                     break
             # After training, print and save a sliver of the edge weights
+            edge_indices, edge_weights = model.dynamic_adjacency(model.V_Adap)
+            num_connections = edge_indices.size(1)
+            print(f"Total connections: {num_connections}")
             sliver_indices, sliver_weights = model.dynamic_adjacency.get_edge_sliver(model.V_Adap)
-            print("Edge sliver indices:", sliver_indices)
             print("Edge sliver weights:", sliver_weights)
+            
 
         
         print(f'Highest Test Accuracy: {highest_test_acc}%')

@@ -6,7 +6,8 @@ from torch_geometric.nn import GATv2Conv
 from tqdm import tqdm
 import numpy as np
 from sklearn.preprocessing import LabelEncoder
-
+from torch_geometric.utils import dense_to_sparse
+from math import ceil
 '''
 The purpose of this script is to be able to call a Spatio-Temporal Graph Attention Network. 
 This is a type of ST-GNN with a GAT for the spatial layer and an LSTM as the temporal layer. 
@@ -36,26 +37,29 @@ class StaticAdaptiveAdjacencyLayer(nn.Module):
 
     def forward(self, V_Adap):
         A_Adap = self.activation(V_Adap)
-        edge_weights = A_Adap[A_Adap > self.edge_threshold]
-        edge_indices = (A_Adap > self.edge_threshold).nonzero(as_tuple=False)
-        edge_index = edge_indices[:, :2].t()  # Only take the first two columns for source and target nodes
-        edge_index = torch.cat((edge_index, edge_weights.unsqueeze(0)), dim=0)
-        # Print statements to monitor changes
-        #print("Number of edges:", edge_index.shape[1])
-        #print("Sample edge weights:", edge_weights[:5])
-        return edge_index
-        
-    
+        batch_size = A_Adap.shape[0]
+        edge_index_list = []
+        edge_attr_list = []
+        for i in range(batch_size):
+            edge_index, edge_attr = dense_to_sparse(A_Adap[i])
+            edge_index_list.append(edge_index)
+            edge_attr_list.append(edge_attr)
+        edge_index = torch.cat(edge_index_list, dim=1)
+        edge_attr = torch.cat(edge_attr_list)
+        #print("edge_attr:", edge_attr)
+        #print("Edge attribute shape:", edge_attr.shape)
+        return edge_index, edge_attr
+
     def get_edge_sliver(self, V_Adap, sliver_size=5):
         A_Adap = self.activation(V_Adap)
         edge_weights = A_Adap[A_Adap > self.edge_threshold]
         edge_indices = (A_Adap > self.edge_threshold).nonzero(as_tuple=False)
-        sliver_indices = edge_indices[:sliver_size, :2]  # Get the first 'sliver_size' edges
+        sliver_indices = edge_indices[:sliver_size, :2]
         sliver_weights = edge_weights[:sliver_size]
         return sliver_indices, sliver_weights
 
 
-        
+
 class TrainableGATLayer(nn.Module):
     '''
     The spatial layer of a Spatio-Temporal Graph Neural Network (ST-GNN). This layer uses a Graph Attention Network (GAT) to update the node and vertex features of a directed graph.
@@ -72,19 +76,16 @@ class TrainableGATLayer(nn.Module):
     '''
     def __init__(self, in_channels, spatial_hidden_dim, spatial_out_features):
         super(TrainableGATLayer, self).__init__()
-        self.gat_conv = GATv2Conv(in_channels, spatial_hidden_dim, edge_dim=1)  # Specify edge_dim
+        self.gat_conv = GATv2Conv(in_channels, spatial_hidden_dim, edge_dim=1)
         self.fc = nn.Linear(spatial_hidden_dim, spatial_out_features)
 
-    def forward(self, x, edge_index):
-    
+    def forward(self, x, edge_index, edge_attr):
         B, N, F = x.size()
-        x_reshaped = x.reshape(-1, F)
-        edge_index_repeated = edge_index[:2].repeat(1, B).long()  # Convert to int64
-        edge_weights_repeated = edge_index[2].repeat(B)
-
-        output = self.gat_conv(x_reshaped, edge_index_repeated, edge_attr=edge_weights_repeated)
-        output_reduced = self.fc(output)
-        return output_reduced.reshape(B, N, -1)
+        x_reshaped = x.reshape(B * N, F)  # Reshape to (B*N, F)
+        output = self.gat_conv(x_reshaped, edge_index, edge_attr=edge_attr)
+        output_reshaped = output.reshape(B, N, -1)  # Reshape back to (B, N, H)
+        output_reduced = self.fc(output_reshaped)
+        return output_reduced
     
 class LSTMModel(nn.Module):
     '''
@@ -134,26 +135,36 @@ class Static_STGAT(nn.Module):
     Returns: 
         - A prediction per interval. (Tensor)
     '''
-    def __init__(self, spatial_in_features, spatial_hidden_dim, spatial_out_features, num_classes, num_nodes, edge_threshold, temporal_hidden_dim, temporal_layer_dimension):
+    def __init__(self, spatial_in_features, spatial_hidden_dim, spatial_out_features, num_classes, num_nodes, edge_threshold, temporal_hidden_dim, temporal_layer_dimension, graph_batch_size=32):
         super(Static_STGAT, self).__init__()
-        self.V_Adap = nn.Parameter(torch.full((num_nodes, num_nodes), 0.5))  # Initialize weights to 0.5
+        self.V_Adap = nn.Parameter(torch.full((1, num_nodes, num_nodes), 0.2))  # Add batch dimension
         self.dynamic_adjacency = StaticAdaptiveAdjacencyLayer(num_nodes, edge_threshold)
         self.gat_layer = TrainableGATLayer(spatial_in_features, spatial_hidden_dim, spatial_out_features)
         self.num_nodes = num_nodes
         self.lstm = LSTMModel(spatial_out_features * num_nodes, temporal_hidden_dim, temporal_layer_dimension, num_classes)
+        self.graph_batch_size = graph_batch_size
 
     def forward(self, X):
         spatial_out = []
-        B, T, N, F = X.size()  
-        X_reshaped = X.view(B, T, -1)  # Reshape to (B, T, N*F)
-
-        edge_index = self.dynamic_adjacency(self.V_Adap)
+        B, T, N, F = X.size()
+        X_reshaped = X.view(B, T, -1)
+        
+        num_graph_batches = ceil(N / self.graph_batch_size)
         for t in range(T):
-            x_t = X_reshaped[:, t, :]  
-            x_t = x_t.view(B, N, -1)  # Reshape back to (B, N, F)
-            spatial_out_t = self.gat_layer(x_t, edge_index)
+            x_t = X_reshaped[:, t, :]
+            x_t = x_t.view(B, N, -1)
+            spatial_out_t = []
+            for i in range(num_graph_batches):
+                start_idx = i * self.graph_batch_size
+                end_idx = min((i + 1) * self.graph_batch_size, N)
+                x_t_batch = x_t[:, start_idx:end_idx, :]
+                V_Adap_batch = self.V_Adap[:, start_idx:end_idx, start_idx:end_idx]
+                edge_index, edge_attr = self.dynamic_adjacency(V_Adap_batch)
+                spatial_out_batch = self.gat_layer(x_t_batch, edge_index, edge_attr)
+                spatial_out_t.append(spatial_out_batch)
+            spatial_out_t = torch.cat(spatial_out_t, dim=1)
             spatial_out.append(spatial_out_t)
-
+        
         spatial_out = torch.stack(spatial_out, dim=1)
         spatial_out = spatial_out.view(B, T, -1)
         out = self.lstm(spatial_out)
