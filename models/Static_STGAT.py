@@ -44,6 +44,16 @@ class StaticAdaptiveAdjacencyLayer(nn.Module):
         #print("Number of edges:", edge_index.shape[1])
         #print("Sample edge weights:", edge_weights[:5])
         return edge_index
+        
+    
+    def get_edge_sliver(self, V_Adap, sliver_size=5):
+        A_Adap = self.activation(V_Adap)
+        edge_weights = A_Adap[A_Adap > self.edge_threshold]
+        edge_indices = (A_Adap > self.edge_threshold).nonzero(as_tuple=False)
+        sliver_indices = edge_indices[:sliver_size, :2]  # Get the first 'sliver_size' edges
+        sliver_weights = edge_weights[:sliver_size]
+        return sliver_indices, sliver_weights
+
 
         
 class TrainableGATLayer(nn.Module):
