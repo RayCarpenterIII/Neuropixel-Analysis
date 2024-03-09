@@ -135,37 +135,51 @@ class Static_STGAT(nn.Module):
     Returns: 
         - A prediction per interval. (Tensor)
     '''
-    def __init__(self, spatial_in_features, spatial_hidden_dim, spatial_out_features, num_classes, num_nodes, edge_threshold, temporal_hidden_dim, temporal_layer_dimension, graph_batch_size=32):
+    def __init__(self, spatial_in_features, spatial_hidden_dim, spatial_out_features, num_classes, num_nodes, edge_threshold, temporal_hidden_dim, temporal_layer_dimension, graph_batch_size = 32, auto_corr_matrix=None):
         super(Static_STGAT, self).__init__()
-        self.V_Adap = nn.Parameter(torch.full((1, num_nodes, num_nodes), 0.2))  # Add batch dimension
+        
+        if auto_corr_matrix is not None:
+            # Ensure the auto-correlation matrix is a tensor and has the correct shape
+            auto_corr_matrix = torch.tensor(auto_corr_matrix, dtype=torch.float32)
+            assert auto_corr_matrix.shape == (num_nodes, num_nodes), "Auto-correlation matrix should have shape (num_nodes, num_nodes)"
+            
+            # Print the original auto-correlation matrix for debugging
+            print(f'original matrix = {auto_corr_matrix}')
+            
+            # Set the initial weights to be the auto-correlation matrix
+            self.V_Adap = nn.Parameter(auto_corr_matrix.unsqueeze(0))  # Add batch dimension
+            
+            # Print the updated auto-correlation matrix for debugging
+            print(f'auto_corr_matrix after threshold = {self.V_Adap}')
+            
+            # Print the unique values before and after applying the threshold
+            print(f'unique_values before threshold = {torch.unique(self.V_Adap)}')
+            print(f'unique_values after threshold = {torch.unique(self.V_Adap)}')
+        else:
+            # If auto-correlation matrix is not provided, initialize with a constant value
+            self.V_Adap = nn.Parameter(torch.full((1, num_nodes, num_nodes), 0.1))  # Add batch dimension
+        
         self.dynamic_adjacency = StaticAdaptiveAdjacencyLayer(num_nodes, edge_threshold)
         self.gat_layer = TrainableGATLayer(spatial_in_features, spatial_hidden_dim, spatial_out_features)
         self.num_nodes = num_nodes
         self.lstm = LSTMModel(spatial_out_features * num_nodes, temporal_hidden_dim, temporal_layer_dimension, num_classes)
-        self.graph_batch_size = graph_batch_size
-
+    
     def forward(self, X):
         spatial_out = []
         B, T, N, F = X.size()
         X_reshaped = X.view(B, T, -1)
         
-        num_graph_batches = ceil(N / self.graph_batch_size)
+        edge_index, edge_attr = self.dynamic_adjacency(self.V_Adap)
+        
         for t in range(T):
             x_t = X_reshaped[:, t, :]
             x_t = x_t.view(B, N, -1)
-            spatial_out_t = []
-            for i in range(num_graph_batches):
-                start_idx = i * self.graph_batch_size
-                end_idx = min((i + 1) * self.graph_batch_size, N)
-                x_t_batch = x_t[:, start_idx:end_idx, :]
-                V_Adap_batch = self.V_Adap[:, start_idx:end_idx, start_idx:end_idx]
-                edge_index, edge_attr = self.dynamic_adjacency(V_Adap_batch)
-                spatial_out_batch = self.gat_layer(x_t_batch, edge_index, edge_attr)
-                spatial_out_t.append(spatial_out_batch)
-            spatial_out_t = torch.cat(spatial_out_t, dim=1)
+            spatial_out_t = self.gat_layer(x_t, edge_index, edge_attr)
             spatial_out.append(spatial_out_t)
         
         spatial_out = torch.stack(spatial_out, dim=1)
         spatial_out = spatial_out.view(B, T, -1)
+        
+        
         out = self.lstm(spatial_out)
         return out

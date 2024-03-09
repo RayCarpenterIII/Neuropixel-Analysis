@@ -1,4 +1,3 @@
-
 import random
 import numpy as np
 from filelock import FileLock
@@ -43,7 +42,7 @@ class ModelTrainer:
         self.wandb_api_key = param_space['wandb_api_key']
         self.computed_params = {}
     
-    def initialize_model(self, config, device, num_nodes):
+    def initialize_model(self, config, device, num_nodes, X_train=None):
         model_name = config.get("Architecture")
         params = self.computed_params
         num_classes, spatial_in_features, lstm_input_dim, temporal_hidden_dim, temporal_layer_dimension, num_epochs = (
@@ -53,9 +52,47 @@ class ModelTrainer:
         )
     
         if model_name == 'Static_STGAT':
-            model = Static_STGAT(spatial_in_features, config["spatial_hidden_dim"], config["spatial_out_features"],
-                                 num_classes, num_nodes, config["edge_threshold"], temporal_hidden_dim, 
-                                 temporal_layer_dimension, config["graph_batch_size"])
+            use_auto_corr_matrix = config.get("use_auto_corr_matrix", False)
+            
+            if use_auto_corr_matrix:
+                if X_train is None:
+                    raise ValueError("X_train must be provided when use_auto_corr_matrix is True")
+                
+                # Reshape X_train before computing the auto-correlation matrix
+                X_train_reshaped = X_train.reshape(-1, num_nodes)
+                
+                # Convert X_train_reshaped to a numeric array
+                X_train_reshaped = np.asarray(X_train_reshaped, dtype=np.float32)
+                
+                # Replace all NaN values with zeros
+                X_train_reshaped[np.isnan(X_train_reshaped)] = 0
+                
+                # Compute the auto-correlation matrix using absolute values
+                auto_corr_matrix = np.abs(np.corrcoef(X_train_reshaped.T))
+                
+                # Replace NaN values in the auto-correlation matrix with zeros
+                auto_corr_matrix[np.isnan(auto_corr_matrix)] = 0
+                
+                # Print the auto-correlation matrix right after computation
+                #print("Auto-correlation matrix after computation:")
+                #print(auto_corr_matrix)
+                
+                # Check for NaNs in the auto-correlation matrix
+                if np.isnan(auto_corr_matrix).any():
+                    raise ValueError("Auto-correlation matrix contains NaNs")
+                
+                # Check the shape of the auto-correlation matrix
+                if auto_corr_matrix.shape != (num_nodes, num_nodes):
+                    raise ValueError(f"Auto-correlation matrix should have shape (num_nodes, num_nodes), but got {auto_corr_matrix.shape}")
+                
+                model = Static_STGAT(spatial_in_features, config["spatial_hidden_dim"], config["spatial_out_features"],
+                                     num_classes, num_nodes, config["edge_threshold"], temporal_hidden_dim, 
+                                     temporal_layer_dimension, config["graph_batch_size"], auto_corr_matrix)
+            else:
+                model = Static_STGAT(spatial_in_features, config["spatial_hidden_dim"], config["spatial_out_features"],
+                                     num_classes, num_nodes, config["edge_threshold"], temporal_hidden_dim, 
+                                     temporal_layer_dimension, config["graph_batch_size"])
+            
             self.graph_optimizer = Adam([model.V_Adap], lr=config["graph_lr"])  # Define the graph_optimizer attribute
             return model
         
@@ -72,15 +109,35 @@ class ModelTrainer:
             return model
         
         elif model_name == 'Transformer':
-            if model_name == 'Transformer':
-                model = TransformerTemporalLayer(
-                    original_input_dim=config["original_input_dim"],
-                    transformer_input_dim=config["transformer_input_dim"],  
-                    num_heads=config["num_heads"],
-                    num_layers=config["num_layers"],
-                    output_dim=config["output_dim"]
-                )
-        return model
+            model = TransformerTemporalLayer(
+            original_input_dim=config["original_input_dim"],
+            transformer_input_dim=config["transformer_input_dim"],  
+            num_heads=config["num_heads"],
+            num_layers=config["num_layers"],
+            output_dim=config["output_dim"]
+            )
+            return model
+
+        elif model_name == "ST-TR":
+            model = Static_STTR(
+                spatial_in_features=spatial_in_features, 
+                spatial_hidden_dim=config["spatial_hidden_dim"], 
+                spatial_out_features=config["spatial_out_features"],
+                num_classes=num_classes, 
+                num_nodes=num_nodes, 
+                edge_threshold=config["edge_threshold"],
+                transformer_input_dim=config["transformer_input_dim"], 
+                num_heads=config["num_heads"], 
+                num_layers=config["num_layers"], 
+                output_dim=config["output_dim"],
+            )
+            self.graph_optimizer = Adam([model.V_Adap], lr=config["graph_lr"])
+            
+            return model
+        
+        else:
+            raise ValueError(f"Unrecognized model architecture: {model_name}")
+
         
       
         
@@ -145,13 +202,26 @@ class ModelTrainer:
         self.computed_params['label_encoder'] = LabelEncoder().fit(y_train.ravel())
         config.update(self.computed_params)
         num_nodes = X_train.shape[2]  # Assuming X_train has shape (batch_size, num_timesteps, num_nodes, num_features)
+        print(f"num_nodes: {num_nodes}")
+        print(f"X_train shape: {X_train.shape}")
+        use_auto_corr_matrix = config.get("use_auto_corr_matrix", False)
 
-        model = self.initialize_model(config, device, num_nodes)
+        if use_auto_corr_matrix:
+            X_train_reshaped = X_train.reshape(-1, num_nodes)
+            X_train_reshaped = np.asarray(X_train_reshaped, dtype=np.float32)
+            
+            # Replace NaN columns with zeros
+            nan_columns = np.where(np.isnan(X_train_reshaped).any(axis=0))[0]
+            X_train_reshaped[:, nan_columns] = 0
+            
+            model = self.initialize_model(config, device, num_nodes, X_train_reshaped)
+        else:
+            model = self.initialize_model(config, device, num_nodes)
         model.to(device)
     
         criterion = nn.CrossEntropyLoss()
         optimizer = Adam(model.parameters(), lr=config["lr"])
-    
+        
         scaler = GradScaler()  # Initialize the GradScaler for AMP
     
         
@@ -196,6 +266,7 @@ class ModelTrainer:
                 loss = loss / accumulation_steps  # Scale the loss to account for accumulation
                 self.graph_optimizer.zero_grad()
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 self.graph_optimizer.step()
                 optimizer.step()
         
@@ -212,7 +283,11 @@ class ModelTrainer:
                     progress_bar.update(batch_idx - progress_bar.n)  # Update progress bar to the current batch index
                     progress_bar.set_postfix({'Loss': running_loss / (batch_count + 1), 'Train Acc': correct_train / total_train * 100})
                     sliver_indices, sliver_weights = model.dynamic_adjacency.get_edge_sliver(model.V_Adap)
+                    edge_indices, edge_weights = model.dynamic_adjacency(model.V_Adap)
+                    num_connections = edge_indices.size(1)
+                    print(f"Total connections: {num_connections}")
                     print("Weights:", sliver_weights)
+                    
 
             # Close the progress bar at the end of the epoch
             progress_bar.close()
@@ -297,16 +372,23 @@ class ModelTrainer:
         print("Edge sliver indices:", sliver_indices)
         print("Edge sliver weights:", sliver_weights)
 
-        # Save the edge sliver to a file
-        with open("edge_sliver.pkl", "wb") as f:
-            pickle.dump({"indices": sliver_indices, "weights": sliver_weights}, f)
         
+        def save_model_weights(self, model, test_acc, config):
+            if test_acc > 80:
+                model_name = config['Architecture']
+                checkpoint_dir = f"checkpoints/{model_name}"
+                os.makedirs(checkpoint_dir, exist_ok=True)
+                checkpoint_path = os.path.join(checkpoint_dir, f"{model_name}_checkpoint_{test_acc:.2f}.pth")
+                torch.save(model.state_dict(), checkpoint_path)
+                print(f"Model weights saved to {checkpoint_path}")
+                
         print(f'Highest Test Accuracy: {highest_test_acc}%')
+        self.save_model_weights(model, highest_test_acc, config)
         train.report({'test_acc': highest_test_acc})  # Report the highest test accuracy
-    
+            
     def execute_tuning(self):
         scheduler = ASHAScheduler(max_t=100, grace_period=5, reduction_factor=2, brackets=3)
-        resources_per_trial = {"cpu": 16, "gpu": 1}    #Pass as parameter instead 
+        resources_per_trial = {"cpu": 256, "gpu": 1}    
         hebo = HEBOSearch(metric="test_acc", mode='max')
     
         tuner = tune.Tuner(
