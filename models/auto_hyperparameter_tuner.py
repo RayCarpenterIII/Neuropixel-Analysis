@@ -26,6 +26,7 @@ from torch_geometric.utils import add_self_loops
 from torch.cuda.amp import GradScaler, autocast
 from torch.profiler import profile, record_function, ProfilerActivity
 from tqdm import tqdm
+from torch.optim.lr_scheduler import StepLR
 
 
 from models.STGAT import * 
@@ -33,6 +34,8 @@ from models.PCR import *
 from models.NN import *
 from models.STTR import *
 from models.Static_STGAT import *
+from models.MultiLayerNN import *
+from models.GAT import *
 
 class ModelTrainer:
     def __init__(self, param_space):
@@ -99,6 +102,9 @@ class ModelTrainer:
         elif model_name == 'LSTM':
             model = LSTM(input_dim, config["spatial_hidden_dim"], layer_dim, ouput_dim)
             return model
+        elif model_name == 'GAT':
+            model = GAT(spatial_in_features, config["spatial_hidden_dim"], num_classes, num_nodes, config["edge_threshold"], auto_corr_matrix)
+            return model
 
         elif model_name == 'PCR':
             model = PCRModel(n_components=config.get("n_components", 10))
@@ -106,6 +112,14 @@ class ModelTrainer:
         
         elif model_name == 'NN':
             model = NNModel(input_dim, config["hidden_dim"], config["output_dim"])
+            return model
+        
+        elif model_name == 'MLNN':
+            input_dim = num_nodes * spatial_in_features
+            hidden_dim = config["hidden_dim"]
+            num_layers = config["num_layers"]
+            output_dim = num_classes
+            model = MLNNModel(input_dim, hidden_dim, num_layers, output_dim)
             return model
         
         elif model_name == 'Transformer':
@@ -221,8 +235,11 @@ class ModelTrainer:
     
         criterion = nn.CrossEntropyLoss()
         optimizer = Adam(model.parameters(), lr=config["lr"])
+
+        # Add the learning rate scheduler here
+        scheduler = StepLR(optimizer, step_size=3, gamma=0.1)
         
-        scaler = GradScaler()  # Initialize the GradScaler for AMP
+        scaler = GradScaler()
     
         
         from torch_geometric.data import NeighborSampler
@@ -333,7 +350,8 @@ class ModelTrainer:
             # Update the highest test accuracy
             if test_acc > highest_test_acc:
                 highest_test_acc = test_acc
-    
+            scheduler.step()
+
             end_time = time.time()  # End time of the epoch
             epoch_duration = end_time - start_time
             wandb.log({
