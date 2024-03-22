@@ -133,6 +133,28 @@ class ModelTrainer:
             return model
 
         elif model_name == "ST-TR":
+            use_auto_corr_matrix = config.get("use_auto_corr_matrix", False)
+
+            auto_corr_matrix = None
+            if use_auto_corr_matrix:
+                if X_train is None:
+                    raise ValueError("X_train must be provided when use_auto_corr_matrix is True")
+
+                # Reshape X_train before computing the auto-correlation matrix
+                X_train_reshaped = X_train.reshape(-1, num_nodes)
+
+                # Convert X_train_reshaped to a numeric array and replace NaNs with zeros
+                X_train_reshaped = np.asarray(X_train_reshaped, dtype=np.float32)
+                X_train_reshaped[np.isnan(X_train_reshaped)] = 0
+
+                # Compute the auto-correlation matrix and handle NaNs
+                auto_corr_matrix = np.abs(np.corrcoef(X_train_reshaped.T))
+                auto_corr_matrix[np.isnan(auto_corr_matrix)] = 0
+
+                # Ensure the auto-correlation matrix is valid
+                if np.isnan(auto_corr_matrix).any() or auto_corr_matrix.shape != (num_nodes, num_nodes):
+                    raise ValueError("Invalid auto-correlation matrix.")
+
             model = Static_STTR(
                 spatial_in_features=spatial_in_features, 
                 spatial_hidden_dim=config["spatial_hidden_dim"], 
@@ -140,15 +162,17 @@ class ModelTrainer:
                 num_classes=num_classes, 
                 num_nodes=num_nodes, 
                 edge_threshold=config["edge_threshold"],
+                original_input_dim=config["original_input_dim"],
                 transformer_input_dim=config["transformer_input_dim"], 
                 num_heads=config["num_heads"], 
                 num_layers=config["num_layers"], 
                 output_dim=config["output_dim"],
+                auto_corr_matrix=auto_corr_matrix 
             )
             self.graph_optimizer = Adam([model.V_Adap], lr=config["graph_lr"])
-            
+
             return model
-        
+
         else:
             raise ValueError(f"Unrecognized model architecture: {model_name}")
 
@@ -157,6 +181,7 @@ class ModelTrainer:
         
     def train_model(self, config):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model_name = config.get("Architecture")
 
         wandb = setup_wandb(config, project=self.wandb_project, api_key=self.wandb_api_key)
         should_checkpoint = config.get("should_checkpoint", False)
@@ -234,10 +259,18 @@ class ModelTrainer:
         model.to(device)
     
         criterion = nn.CrossEntropyLoss()
-        optimizer = Adam(model.parameters(), lr=config["lr"])
+        
+        # Initialize optimizers conditionally
+        if model_name == "ST-TR":
+            stgat_optimizer = Adam(model.static_stgat.parameters(), lr=config["stgat_lr"])
+            transformer_optimizer = Adam(model.transformer.parameters(), lr=config["transformer_lr"])
+        else:
+            optimizer = Adam(model.parameters(), lr=config["lr"])
 
-        # Add the learning rate scheduler here
-        scheduler = StepLR(optimizer, step_size=3, gamma=0.1)
+        # Initialize learning rate scheduler for the non-STTR optimizer
+        if model_name != "ST-TR":
+            scheduler = StepLR(optimizer, step_size=3, gamma=0.1)
+
         
         scaler = GradScaler()
     
@@ -261,7 +294,13 @@ class ModelTrainer:
             progress_bar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{num_epochs}', mininterval=1e9)
         
             accumulation_steps = config["accumulation_steps"]  # Number of steps to accumulate gradients
-            optimizer.zero_grad()  # Reset gradients before the inner loop
+
+            #Reset zero gradients based on architecture 
+            if model_name == "ST-TR":
+                stgat_optimizer.zero_grad()
+                transformer_optimizer.zero_grad()
+            else:
+                optimizer.zero_grad()
             
             for batch_idx, (features, labels) in enumerate(train_loader):
                 features, labels = features.to(device), labels.to(device)
@@ -277,18 +316,31 @@ class ModelTrainer:
         
                 # In the training loop, pass the edge_index to the model
                 outputs = model(features)
-        
-                # Compute loss, backward pass, and optimization
-                loss = criterion(outputs, labels)
+                
+                #print(f"Output shape: {outputs.shape}, Target shape: {labels.shape}")
+                outputs_last_step = outputs[:, :]  # shape: [batches, 119]
+                loss = criterion(outputs_last_step, labels)
                 loss = loss / accumulation_steps  # Scale the loss to account for accumulation
+                
+                
                 self.graph_optimizer.zero_grad()
+                
+                
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                self.graph_optimizer.step()
-                optimizer.step()
+                
+                if model_name == "ST-TR":
+                    torch.nn.utils.clip_grad_norm_(model.static_stgat.parameters(), max_norm=1.0)
+                    torch.nn.utils.clip_grad_norm_(model.transformer.parameters(), max_norm=1.0)
+                    stgat_optimizer.step()
+                    transformer_optimizer.step()
+                else:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    self.graph_optimizer.step()
+                    optimizer.step()
+                
         
                 running_loss += loss.item()  # Update running_loss
-                _, predicted = torch.max(outputs.data, 1)
+                _, predicted = torch.max(outputs_last_step.data, 1)
                 total_train += labels.size(0)
                 correct_train += (predicted == labels).sum().item()
                 features.cpu()
@@ -350,8 +402,11 @@ class ModelTrainer:
             # Update the highest test accuracy
             if test_acc > highest_test_acc:
                 highest_test_acc = test_acc
-            scheduler.step()
-
+                
+            
+            if model_name != "ST-TR":
+                    scheduler.step()
+                    
             end_time = time.time()  # End time of the epoch
             epoch_duration = end_time - start_time
             wandb.log({

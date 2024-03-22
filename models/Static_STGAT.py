@@ -137,7 +137,6 @@ class Static_STGAT(nn.Module):
     '''
     def __init__(self, spatial_in_features, spatial_hidden_dim, spatial_out_features, num_classes, num_nodes, edge_threshold, temporal_hidden_dim, temporal_layer_dimension, graph_batch_size = 32, auto_corr_matrix=None):
         super(Static_STGAT, self).__init__()
-        
         if auto_corr_matrix is not None:
             # Ensure the auto-correlation matrix is a tensor and has the correct shape
             auto_corr_matrix = torch.tensor(auto_corr_matrix, dtype=torch.float32)
