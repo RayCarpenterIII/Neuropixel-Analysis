@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
-
+#Cole was here
 class CustomNet(nn.Module):
     def __init__(self, input_dim, num_layers, num_classes):
         super(CustomNet, self).__init__()
