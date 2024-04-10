@@ -27,6 +27,7 @@ from torch.cuda.amp import GradScaler, autocast
 from torch.profiler import profile, record_function, ProfilerActivity
 from tqdm import tqdm
 from torch.optim.lr_scheduler import StepLR
+from data_processors.data_splitter import DataSplitter    
 
 
 from models.STGAT import * 
@@ -44,6 +45,8 @@ class ModelTrainer:
         self.wandb_project = param_space['wandb_project']
         self.wandb_api_key = param_space['wandb_api_key']
         self.computed_params = {}
+        self.best_model_path = ""
+        self.highest_test_acc = 0
     
     def initialize_model(self, config, device, num_nodes, X_train=None):
         model_name = config.get("Architecture")
@@ -176,17 +179,22 @@ class ModelTrainer:
         else:
             raise ValueError(f"Unrecognized model architecture: {model_name}")
 
-        
-      
+    def save_model_weights(self, model, test_acc, config):
+            if test_acc > 80:
+                model_name = config['Architecture']
+                checkpoint_dir = f"checkpoints/{model_name}"
+                os.makedirs(checkpoint_dir, exist_ok=True)
+                checkpoint_path = os.path.join(checkpoint_dir, f"{model_name}_checkpoint_{test_acc:.2f}.pth")
+                torch.save(model.state_dict(), checkpoint_path)
+                print(f"Model weights saved to {checkpoint_path}")
+
         
     def train_model(self, config):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model_name = config.get("Architecture")
-
+        
         wandb = setup_wandb(config, project=self.wandb_project, api_key=self.wandb_api_key)
         should_checkpoint = config.get("should_checkpoint", False)
-
-        from data_processors.data_splitter import DataSplitter
         
         mouse_number = config['mouse_number']
         timesteps = config['timesteps']
@@ -201,21 +209,21 @@ class ModelTrainer:
                 print(f"Loaded spike trains dataset: {type(spike_df)}")
 
         # Split data into train, test, and validation sets. 
-        DataSplitter = DataSplitter(dataframe = spike_df, batch_size = config['batch_size'])
+        data_splitter = DataSplitter(dataframe = spike_df, batch_size = config['batch_size'])
 
         # Access the data loaders.
         ### Redo the code to combine the trains into the loader.
-        X_train = DataSplitter.X_train
-        X_test = DataSplitter.X_test
-        #X_val = DataSplitter.X_val
-        y_train = DataSplitter.y_train
-        y_test = DataSplitter.y_test
-        #y_val = DataSplitter.y_val
-        train_loader = DataSplitter.train_loader
-        test_loader = DataSplitter.test_loader
-        #val_loader = DataSplitter.val_loader
-        X = DataSplitter.X
-        y = DataSplitter.y
+        X_train = data_splitter.X_train
+        X_test = data_splitter.X_test
+        #X_val = data_splitter.X_val
+        y_train = data_splitter.y_train
+        y_test = data_splitter.y_test
+        #y_val = data_splitter.y_val
+        train_loader = data_splitter.train_loader
+        test_loader = data_splitter.test_loader
+        #val_loader = data_splitter.val_loader
+        X = data_splitter.X
+        y = data_splitter.y
 
         # Early stopping parameters
         patience = config['early_stop_patience']
@@ -241,8 +249,8 @@ class ModelTrainer:
         self.computed_params['label_encoder'] = LabelEncoder().fit(y_train.ravel())
         config.update(self.computed_params)
         num_nodes = X_train.shape[2]  # Assuming X_train has shape (batch_size, num_timesteps, num_nodes, num_features)
-        print(f"num_nodes: {num_nodes}")
-        print(f"X_train shape: {X_train.shape}")
+        #print(f"num_nodes: {num_nodes}")
+        #print(f"X_train shape: {X_train.shape}")
         use_auto_corr_matrix = config.get("use_auto_corr_matrix", False)
 
         if use_auto_corr_matrix:
@@ -291,7 +299,7 @@ class ModelTrainer:
             update_interval = max(1, total_batches // 10)  # Update every 10% or at least every batch
         
             # Initialize tqdm with manual control by setting mininterval to a large number
-            progress_bar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{num_epochs}', mininterval=1e9)
+            progress_bar = tqdm(train_loader, desc=f'Train Epoch {epoch+1}/{num_epochs}', mininterval=1e9)
         
             accumulation_steps = config["accumulation_steps"]  # Number of steps to accumulate gradients
 
@@ -319,7 +327,9 @@ class ModelTrainer:
                 
                 #print(f"Output shape: {outputs.shape}, Target shape: {labels.shape}")
                 outputs_last_step = outputs[:, :]  # shape: [batches, 119]
+                
                 loss = criterion(outputs_last_step, labels)
+                    
                 loss = loss / accumulation_steps  # Scale the loss to account for accumulation
                 
                 
@@ -348,21 +358,29 @@ class ModelTrainer:
                 batch_count += 1
         
                 # Manually update the progress bar every 10% or at the end of the epoch
+                '''
                 if batch_idx % update_interval == 0 or batch_idx == total_batches - 1:
                     progress_bar.update(batch_idx - progress_bar.n)  # Update progress bar to the current batch index
                     progress_bar.set_postfix({'Loss': running_loss / (batch_count + 1), 'Train Acc': correct_train / total_train * 100})
                     sliver_indices, sliver_weights = model.dynamic_adjacency.get_edge_sliver(model.V_Adap)
                     edge_indices, edge_weights = model.dynamic_adjacency(model.V_Adap)
                     num_connections = edge_indices.size(1)
-                    print(f"Total connections: {num_connections}")
-                    print("Weights:", sliver_weights)
-                    
+                    #print(f"Total connections: {num_connections}")
+                    #print("Weights:", sliver_weights)
+                '''
+            #print(f'output.shape = {np.shape(outputs_last_step)}')
+            #print(f'output = {outputs_last_step}')
+            #print(f'predicted_indices.shape: {np.shape(predicted)}')
+            #print(f'predicted_indices = {predicted}')
+            #print(f'labels shape = {np.shape(labels)}')
+            #print(f'labels = {labels}')
+            
+            progress_bar.set_postfix({'Loss': running_loss / (batch_count + 1), 'Train Acc': correct_train / total_train * 100})
 
-            # Close the progress bar at the end of the epoch
+            #### Close the progress bar at the end of the epoch
             progress_bar.close()
         
             train_acc = 100 * correct_train / total_train
-    
             model.eval()  # Set the model to evaluation mode
             correct_test = 0
             total_test = 0
@@ -381,17 +399,26 @@ class ModelTrainer:
                     class_idx = self.computed_params['label_encoder'].transform(labels.cpu().numpy())  # Use all class indices
                     class_idx = torch.tensor(class_idx, dtype=torch.long).to(device)
                     outputs = model(features)  # Call the model with the features and class index
-                    _, predicted = torch.max(outputs.data, 1)
+                    predicted_indices = torch.argmax(outputs, dim=1)
                     total_test += labels.size(0)
-                    correct_test += (predicted == labels).sum().item()
-            
+                    #print(f'output.shape = {np.shape(outputs)}')
+                    #print(f'output = {outputs}')
+                    #print(f'predicted_indices.shape: {np.shape(predicted_indices)}')
+                    #print(f'predicted_indices = {predicted_indices}')
+                    #print(f'labels shape = {np.shape(labels)}')
+                    #print(f'labels = {labels}')
+
+                    correct_test += (predicted_indices == labels).sum().item()
+                    
                     features.cpu()
                     labels.cpu()
             
                     # Manually update the progress bar every 25% or at the end of the epoch
+                    '''
                     if batch_idx % update_interval == 0 or batch_idx == total_batches - 1:
                         test_progress_bar.update(batch_idx - test_progress_bar.n)  # Update progress bar to the current batch index
                         test_progress_bar.set_postfix({'Test Acc': correct_test / total_test * 100})
+                    '''
             
             # Close the progress bar at the end of the test loop
             test_progress_bar.close()
@@ -399,9 +426,19 @@ class ModelTrainer:
             test_acc = 100 * correct_test / total_test
             
 
+            best_model_path = ""
+            
             # Update the highest test accuracy
-            if test_acc > highest_test_acc:
-                highest_test_acc = test_acc
+            if test_acc > self.highest_test_acc:
+                self.highest_test_acc = test_acc
+                
+                #Save the best model to test on different mice
+                self.best_model_path = f"best_model_{config['Architecture']}_{config['mouse_number']}.pth"
+                model_save_path = os.path.join("saved_models/", self.best_model_path)
+                torch.save(model.state_dict(), self.best_model_path)                
+                print(f"New highest test accuracy: {self.highest_test_acc}%. Model saved to {model_save_path}")
+
+
                 
             
             if model_name != "ST-TR":
@@ -414,8 +451,7 @@ class ModelTrainer:
                 "Loss": running_loss, 
                 "Train Accuracy": train_acc, 
                 "Test Accuracy": test_acc, 
-                "Epoch Duration": epoch_duration,
-                "Architecture": config['Architecture']}
+                "Epoch Duration": epoch_duration}
             )
     
             # Print Results
@@ -439,25 +475,15 @@ class ModelTrainer:
             
 
         
-        print(f'Highest Test Accuracy: {highest_test_acc}%')
+        print(f'Highest Test Accuracy: {self.highest_test_acc}%')
         # After training, print and save a sliver of the edge weights.
         sliver_indices, sliver_weights = model.dynamic_adjacency.get_edge_sliver(model.V_Adap)
         print("Edge sliver indices:", sliver_indices)
         print("Edge sliver weights:", sliver_weights)
-
-        
-        def save_model_weights(self, model, test_acc, config):
-            if test_acc > 80:
-                model_name = config['Architecture']
-                checkpoint_dir = f"checkpoints/{model_name}"
-                os.makedirs(checkpoint_dir, exist_ok=True)
-                checkpoint_path = os.path.join(checkpoint_dir, f"{model_name}_checkpoint_{test_acc:.2f}.pth")
-                torch.save(model.state_dict(), checkpoint_path)
-                print(f"Model weights saved to {checkpoint_path}")
                 
-        print(f'Highest Test Accuracy: {highest_test_acc}%')
-        self.save_model_weights(model, highest_test_acc, config)
-        train.report({'test_acc': highest_test_acc})  # Report the highest test accuracy
+        print(f'Highest Test Accuracy: {self.highest_test_accself.highest_test_acc}%')
+        self.save_model_weights(model, self.highest_test_acc, config)
+        train.report({'test_acc': self.highest_test_acc})  # Report the highest test accuracy
             
     def execute_tuning(self):
         scheduler = ASHAScheduler(max_t=100, grace_period=5, reduction_factor=2, brackets=3)
@@ -483,6 +509,32 @@ class ModelTrainer:
     
         results = tuner.fit()
         print("Best config is:", results.get_best_result().config)
+        
+    
+    def load_model(self, model_path, config):
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model = self.initialize_model(config, device, config['num_nodes'])
+        model.load_state_dict(torch.load(model_path, map_location=device))
+        model.to(device)
+        return model
+    
+    def test_loaded_model(self, model, new_mouse_loader):
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model.eval()  
+        correct = 0
+        total = 0
+
+        with torch.no_grad():
+            for data, labels in new_mouse_loader:
+                data, labels = data.to(device), labels.to(device)
+                outputs = model(data)
+                _, predicted = torch.max(outputs.data, 1)
+                total += labels.size(0)
+                correct += (predicted == labels).sum().item()
+
+        accuracy = 100 * correct / total
+        print(f'Accuracy of the model on the new mouse data: {accuracy:.2f}%')
+        
 
 '''
 ### Example usage
