@@ -1,27 +1,31 @@
 import random
 import numpy as np
-from filelock import FileLock
 import tempfile
 import ray
-from ray import train, tune
-from ray.air.integrations.wandb import WandbLoggerCallback, setup_wandb
-from ray.tune.schedulers import AsyncHyperBandScheduler
-from ray.train import Checkpoint
-from ray.tune.search.hebo import HEBOSearch
 import torch
 import torch.optim as optim
 import wandb
-from ray.tune.schedulers import ASHAScheduler
-from ray.tune import CLIReporter
 import ray
 import os
 import pickle
 import numpy as np
 import torch
+import time
+import re
+
+from filelock import FileLock
+
+from ray import train, tune
+from ray.air.integrations.wandb import WandbLoggerCallback, setup_wandb
+from ray.tune.schedulers import AsyncHyperBandScheduler
+from ray.train import Checkpoint
+from ray.tune.search.hebo import HEBOSearch
+from ray.tune.schedulers import ASHAScheduler
+from ray.tune import CLIReporter
+
 from sklearn.preprocessing import LabelEncoder
 from torch.optim import Adam
 from torch import nn
-import time
 from torch_geometric.utils import add_self_loops
 from torch.cuda.amp import GradScaler, autocast
 from torch.profiler import profile, record_function, ProfilerActivity
@@ -37,6 +41,16 @@ from models.STTR import *
 from models.Static_STGAT import *
 from models.MultiLayerNN import *
 from models.GAT import *
+
+def get_highest_existing_accuracy(directory):
+    highest_accuracy = 0.0
+    for filename in os.listdir(directory):
+        if filename.endswith(".pth"):
+            match = re.search(r'_(\d+\.\d+)\.pth$', filename)
+            if match:
+                accuracy = float(match.group(1))
+                highest_accuracy = max(highest_accuracy, accuracy)
+    return highest_accuracy
 
 class ModelTrainer:
     def __init__(self, param_space):
@@ -99,7 +113,7 @@ class ModelTrainer:
                                      num_classes, num_nodes, config["edge_threshold"], temporal_hidden_dim, 
                                      temporal_layer_dimension, config["graph_batch_size"])
             
-            self.graph_optimizer = Adam([model.V_Adap], lr=config["graph_lr"])  # Define the graph_optimizer attribute
+            self.graph_optimizer = Adam([model.V_Adap], lr=config["graph_lr"])  
             return model
         
         elif model_name == 'LSTM':
@@ -298,7 +312,7 @@ class ModelTrainer:
             total_batches = len(train_loader)
             update_interval = max(1, total_batches // 10)  # Update every 10% or at least every batch
         
-            # Initialize tqdm with manual control by setting mininterval to a large number
+            # Initialize tqdm with manual control by setting mininterval to large number
             progress_bar = tqdm(train_loader, desc=f'Train Epoch {epoch+1}/{num_epochs}', mininterval=1e9)
         
             accumulation_steps = config["accumulation_steps"]  # Number of steps to accumulate gradients
@@ -426,21 +440,41 @@ class ModelTrainer:
             test_acc = 100 * correct_test / total_test
             
 
+
             best_model_path = ""
             
-            # Update the highest test accuracy
+            # Update highest test accuracy
             if test_acc > self.highest_test_acc:
                 self.highest_test_acc = test_acc
-                
-                #Save the best model to test on different mice
-                self.best_model_path = f"best_model_{config['Architecture']}_{config['mouse_number']}.pth"
-                model_save_path = os.path.join("saved_models/", self.best_model_path)
-                torch.save(model.state_dict(), self.best_model_path)                
-                print(f"New highest test accuracy: {self.highest_test_acc}%. Model saved to {model_save_path}")
-
-
-                
             
+                saved_models_dir = os.path.join(os.path.expanduser("~"), "/proj/STOR/pipiras/Neuropixel/saved_models")
+            
+                os.makedirs(saved_models_dir, exist_ok=True)
+            
+                os.chmod(saved_models_dir, 0o755)  # Grant read, write, and execute permissions
+                os.chown(saved_models_dir, os.getuid(), os.getgid())  # Change ownership to current user
+            
+                # Check for existing models in directory
+                existing_models = [f for f in os.listdir(saved_models_dir) if f.endswith(".pth")]
+            
+                # Get highest accuracy from existing models
+                highest_existing_acc = 0.0
+                for model_file in existing_models:
+                    match = re.search(r'_(\d+\.\d+)\.pth$', model_file)
+                    if match:
+                        acc = float(match.group(1))
+                        highest_existing_acc = max(highest_existing_acc, acc)
+            
+                # Save model if the current accuracy higher 
+                if test_acc > highest_existing_acc:
+                    best_model_path = f"best_model_{config['Architecture']}_{config['mouse_number']}_{test_acc:.2f}.pth"
+                    model_save_path = os.path.join(saved_models_dir, best_model_path)
+                    torch.save(model.state_dict(), model_save_path)
+                    print(f"New highest test accuracy: {test_acc:.2f}%. Model saved to {model_save_path}")
+                else:
+                    print(f"Test accuracy {test_acc:.2f}% is not higher than the existing highest accuracy {highest_existing_acc:.2f}%. Model not saved.")
+                    
+                    
             if model_name != "ST-TR":
                     scheduler.step()
                     
@@ -481,7 +515,7 @@ class ModelTrainer:
         print("Edge sliver indices:", sliver_indices)
         print("Edge sliver weights:", sliver_weights)
                 
-        print(f'Highest Test Accuracy: {self.highest_test_accself.highest_test_acc}%')
+        print(f'Highest Test Accuracy: {self.highest_test_acc}%')
         self.save_model_weights(model, self.highest_test_acc, config)
         train.report({'test_acc': self.highest_test_acc})  # Report the highest test accuracy
             
@@ -513,7 +547,7 @@ class ModelTrainer:
     
     def load_model(self, model_path, config):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model = self.initialize_model(config, device, config['num_nodes'])
+        model = self.initialize_model(config, device)
         model.load_state_dict(torch.load(model_path, map_location=device))
         model.to(device)
         return model
