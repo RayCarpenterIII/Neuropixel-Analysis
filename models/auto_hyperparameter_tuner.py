@@ -113,7 +113,7 @@ class ModelTrainer:
                                      num_classes, num_nodes, config["edge_threshold"], temporal_hidden_dim, 
                                      temporal_layer_dimension, config["graph_batch_size"])
             
-            self.graph_optimizer = Adam([model.V_Adap], lr=config["graph_lr"])  
+            self.graph_optimizer = Adam([model.V_Adap], lr=config["graph_lr"])  # Define the graph_optimizer attribute
             return model
         
         elif model_name == 'LSTM':
@@ -312,7 +312,7 @@ class ModelTrainer:
             total_batches = len(train_loader)
             update_interval = max(1, total_batches // 10)  # Update every 10% or at least every batch
         
-            # Initialize tqdm with manual control by setting mininterval to large number
+            # Initialize tqdm with manual control by setting mininterval to a large number
             progress_bar = tqdm(train_loader, desc=f'Train Epoch {epoch+1}/{num_epochs}', mininterval=1e9)
         
             accumulation_steps = config["accumulation_steps"]  # Number of steps to accumulate gradients
@@ -545,27 +545,38 @@ class ModelTrainer:
         print("Best config is:", results.get_best_result().config)
         
     
-    def load_model(self, model_path, config):
+    def load_model(self, model_path, config, num_nodes, num_classes, spatial_in_features):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model = self.initialize_model(config, device)
+        self.computed_params['num_classes'] = num_classes
+        self.computed_params['spatial_in_features'] = spatial_in_features
+        self.computed_params['num_nodes'] = num_nodes
+    
+        # Set default computed_params keys
+        self.computed_params.setdefault('lstm_input_dim', spatial_in_features * num_nodes)
+        self.computed_params.setdefault('temporal_hidden_dim', config.get('temporal_hidden_dim', 128))
+        self.computed_params.setdefault('temporal_layer_dimension', config.get('temporal_layer_dimension', 1))
+        self.computed_params.setdefault('num_epochs', config.get('num_epochs', 10))
+    
+        model = self.initialize_model(config, device, num_nodes)
         model.load_state_dict(torch.load(model_path, map_location=device))
         model.to(device)
         return model
     
-    def test_loaded_model(self, model, new_mouse_loader):
+    def test_loaded_model(self, model, new_mouse_loader, num_nodes, num_classes):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model.eval()  
         correct = 0
         total = 0
-
+    
         with torch.no_grad():
             for data, labels in new_mouse_loader:
                 data, labels = data.to(device), labels.to(device)
+                labels = labels.squeeze().long()
                 outputs = model(data)
                 _, predicted = torch.max(outputs.data, 1)
                 total += labels.size(0)
                 correct += (predicted == labels).sum().item()
-
+    
         accuracy = 100 * correct / total
         print(f'Accuracy of the model on the new mouse data: {accuracy:.2f}%')
         
