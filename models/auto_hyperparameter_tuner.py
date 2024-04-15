@@ -447,10 +447,13 @@ class ModelTrainer:
             if test_acc > self.highest_test_acc:
                 self.highest_test_acc = test_acc
             
-                saved_models_dir = os.path.join(os.path.expanduser("~"), "/proj/STOR/pipiras/Neuropixel/saved_models")
-            
+                base_saved_models_dir = "/proj/STOR/pipiras/Neuropixel/saved_models"
+
+                # Append model architecture to directory path
+                saved_models_dir = os.path.join(base_saved_models_dir, config['Architecture'])
+
                 os.makedirs(saved_models_dir, exist_ok=True)
-            
+
                 os.chmod(saved_models_dir, 0o755)  # Grant read, write, and execute permissions
                 os.chown(saved_models_dir, os.getuid(), os.getgid())  # Change ownership to current user
             
@@ -586,12 +589,12 @@ class ModelTrainer:
                 data, labels = data.to(device), labels.to(device)
                 labels = labels.squeeze().long()
 
-                print(f"Input data shape: {data.shape}")
-                print(f"Labels shape: {labels.shape}")
+                # print(f"Input data shape: {data.shape}")
+                # print(f"Labels shape: {labels.shape}")
 
                 outputs = model(data)
 
-                print(f"Output shape: {outputs.shape}")
+                # print(f"Output shape: {outputs.shape}")
 
                 _, predicted = torch.max(outputs.data, 1)
                 total += labels.size(0)
