@@ -550,15 +550,23 @@ class ModelTrainer:
         self.computed_params['num_classes'] = num_classes
         self.computed_params['spatial_in_features'] = spatial_in_features
         self.computed_params['num_nodes'] = num_nodes
-    
-        # Set default computed_params keys
+
         self.computed_params.setdefault('lstm_input_dim', spatial_in_features * num_nodes)
         self.computed_params.setdefault('temporal_hidden_dim', config.get('temporal_hidden_dim', 128))
         self.computed_params.setdefault('temporal_layer_dimension', config.get('temporal_layer_dimension', 1))
         self.computed_params.setdefault('num_epochs', config.get('num_epochs', 10))
-    
+
         model = self.initialize_model(config, device, num_nodes)
-        model.load_state_dict(torch.load(model_path, map_location=device))
+
+        # Load the state dictionary from the checkpoint
+        state_dict = torch.load(model_path, map_location=device)
+
+        # Filter the state dictionary to keep only matching keys
+        filtered_state_dict = {k: v for k, v in state_dict.items() if k in model.state_dict() and v.shape == model.state_dict()[k].shape}
+
+        # Load the filtered state dictionary into the model
+        model.load_state_dict(filtered_state_dict, strict=False)
+
         model.to(device)
         return model
     
@@ -567,18 +575,37 @@ class ModelTrainer:
         model.eval()  
         correct = 0
         total = 0
-    
+
+        print(f"Testing the loaded model on new mouse data...")
+        print(f"Number of nodes: {num_nodes}")
+        print(f"Number of classes: {num_classes}")
+        print(f"Input data shape: {next(iter(new_mouse_loader))[0].shape}")
+
         with torch.no_grad():
             for data, labels in new_mouse_loader:
                 data, labels = data.to(device), labels.to(device)
                 labels = labels.squeeze().long()
+
+                print(f"Input data shape: {data.shape}")
+                print(f"Labels shape: {labels.shape}")
+
                 outputs = model(data)
+
+                print(f"Output shape: {outputs.shape}")
+
                 _, predicted = torch.max(outputs.data, 1)
                 total += labels.size(0)
                 correct += (predicted == labels).sum().item()
-    
+
+                # print(f"Predicted labels: {predicted}")
+                # print(f"True labels: {labels}")
+                # print(f"Correct predictions: {(predicted == labels).sum().item()} out of {labels.size(0)}")
+                # print("---")
+
         accuracy = 100 * correct / total
         print(f'Accuracy of the model on the new mouse data: {accuracy:.2f}%')
+
+    
         
 
 '''
