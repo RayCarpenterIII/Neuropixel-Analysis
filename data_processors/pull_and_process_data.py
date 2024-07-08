@@ -8,6 +8,7 @@ import concurrent.futures
 import torch
 import json
 import time
+import gc
 
 
 def create_directory_and_manifest(directory_name='output'):
@@ -129,19 +130,24 @@ def process_neuron_wrapper(args):
     """Wrapper function to unpack arguments and call process_neuron."""
     return process_neuron(*args)
 
-def process_all_neurons(spike_times, image_start_times, image_end_times, total_bins, bins_per_image):
-    """Process all neurons in parallel."""
-    # Prepare the arguments for each neuron to be processed
+def process_all_neurons(spike_times, image_start_times, image_end_times, total_bins, bins_per_image, batch_size=100):
+    """Process neurons in parallel."""
     args_list = [(times, image_start_times, image_end_times, total_bins, bins_per_image) for times in spike_times.values()]
+    spike_matrix = []
     
-    # Process neurons using a pool of worker processes
-    with concurrent.futures.ProcessPoolExecutor() as executor:
-        # Use a list comprehension to map process_neuron_wrapper over the arguments
-        spike_matrix = list(tqdm(executor.map(process_neuron_wrapper, args_list), total=len(spike_times), desc='Processing neurons'))
+    #Process neurons in smaller batches to prevent memory overload
+    for i in range(0, len(args_list), batch_size):
+        batch = args_list[i:i+batch_size]
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            batch_result = list(tqdm(executor.map(process_neuron_wrapper, batch), total=len(batch), desc=f'Processing neurons batch {i//batch_size + 1}'))
+        spike_matrix.extend(batch_result)
+        
+        gc.collect() 
+        
     print(f'Spike matrix size -> {np.shape(spike_matrix)}')
-    return torch.stack(spike_matrix)
-
-
+    #Return list of tensors instead of torch.stack for memory efficiency 
+    return [torch.tensor(matrix) for matrix in spike_matrix]
+    
 def create_and_prepare_spike_dataframe(spike_matrix, spike_times, stimulus_table, timesteps_per_frame):
     """
     Create a spike DataFrame and prepare it by adding a frame column.
@@ -280,13 +286,47 @@ def get_session_ids(cache):
     session_table = cache.get_session_table()
     return session_table.index.tolist()
 
-def process_all_sessions(cache, output_dir, timesteps_per_frame=5, timeout=300):
+def process_session_batch(cache, session_batch, output_dir, timesteps_per_frame=5, timeout=300):
     """
-    Process all available sessions.
+    Process a batch of sessions.
+    
+    Parameters:
+    cache (EcephysProjectCache): The cache object.
+    session_batch (list): List of session IDs to process.
+    output_dir (str): The directory where data should be saved.
+    timesteps_per_frame (int): Number of timesteps per frame for binning.
+    timeout (int): Timeout for fetching session data.
+    
+    Returns:
+    dict: A dictionary with session IDs as keys and processed DataFrames as values.
+    """
+    processed_data = {}
+    
+    for session_number in session_batch:
+        print(f"\nProcessing session {session_number}")
+        spike_df = master_function(session_number, output_dir, timesteps_per_frame, timeout)
+        
+        if spike_df is not None:
+            processed_data[session_number] = spike_df
+            
+            # Save the spike_df as a pickle file
+            pkl_file_path = os.path.join(output_dir, f'spike_trains_with_stimulus_session_{session_number}_{timesteps_per_frame}.pkl')
+            with open(pkl_file_path, 'wb') as f:
+                pickle.dump(spike_df, f)
+            print(f"Saved pickle file for session {session_number}")
+        
+        gc.collect()
+    
+    return processed_data
+
+def process_all_sessions_in_batches(cache, output_dir, batch_size=5, timesteps_per_frame=5, timeout=300):
+    """
+    Process all available sessions in batches.
     
     Parameters:
     cache (EcephysProjectCache): The cache object.
     output_dir (str): The directory where data should be saved.
+    batch_size (int): Number of sessions to process in each batch.
     timesteps_per_frame (int): Number of timesteps per frame for binning.
     timeout (int): Timeout for fetching session data.
     
@@ -298,11 +338,16 @@ def process_all_sessions(cache, output_dir, timesteps_per_frame=5, timeout=300):
     
     print(f"Total number of sessions: {len(session_ids)}")
     
-    for session_number in tqdm(session_ids, desc="Processing sessions"):
-        print(f"\nProcessing session {session_number}")
-        result = master_function(session_number, output_dir, timesteps_per_frame, timeout)
-        if result is not None:
-            processed_data[session_number] = result
+    for i in range(0, len(session_ids), batch_size):
+        batch = session_ids[i:i+batch_size]
+        print(f"\nProcessing batch {i//batch_size + 1} of {len(session_ids)//batch_size + 1}")
+        batch_results = process_session_batch(cache, batch, output_dir, timesteps_per_frame, timeout)
+        processed_data.update(batch_results)
+        
+        gc.collect()
+        
+        #Add delay between batches to prevent kernal timeout
+        time.sleep(10)
     
     return processed_data
 
@@ -359,13 +404,16 @@ def master_function(session_number, output_dir, timesteps_per_frame=10, timeout=
 
             print("Filtering valid spike times...")
             valid_spike_times = filter_valid_spike_times(spike_times, session)
+            gc.collect()
 
             print("Calculating bins and processing neurons...")
             image_start_times, image_end_times, total_bins, bins_per_image = calculate_bins(stimulus_table, timesteps_per_frame)
             spike_matrix = process_all_neurons(valid_spike_times, image_start_times, image_end_times, total_bins, bins_per_image)
+            gc.collect()
 
             print("Preparing spike DataFrame...")
             spike_df = create_and_prepare_spike_dataframe(spike_matrix, valid_spike_times, stimulus_table, timesteps_per_frame)
+            gc.collect()
 
             print("Normalizing firing rates...")
             normalized_firing_rates = normalize_firing_rates(spike_df)
