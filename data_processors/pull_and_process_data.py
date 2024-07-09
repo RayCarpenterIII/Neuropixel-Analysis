@@ -1,4 +1,5 @@
 from allensdk.brain_observatory.ecephys.ecephys_project_cache import EcephysProjectCache
+from torch.utils.data import Dataset, DataLoader
 import pandas as pd
 import pickle
 import numpy as np
@@ -9,7 +10,19 @@ import torch
 import json
 import time
 import gc
+import psutil
 
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f"Using device: {device}")
+
+def print_memory_usage():
+    process = psutil.Process()
+    print(f"Memory usage: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+
+def print_gpu_memory():
+    if torch.cuda.is_available():
+        print(f"GPU memory allocated: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+        print(f"GPU memory cached: {torch.cuda.memory_reserved() / 1e9:.2f} GB")        
 
 def create_directory_and_manifest(directory_name='output'):
     """
@@ -113,13 +126,13 @@ def calculate_bins(stimulus_table, timesteps_per_frame=1):
     total_bins = bins_per_image * len(image_start_times)
     return image_start_times, image_end_times, total_bins, bins_per_image
 
-def process_neuron(times, image_start_times, image_end_times, total_bins, bins_per_image):
+def process_neuron(times, image_start_times, image_end_times, total_bins, bins_per_image, device):
     """Process a single neuron's spike times."""
     start_bin = 0
-    neuron_spike_bins = torch.zeros(total_bins, dtype=torch.int32)
+    neuron_spike_bins = torch.zeros(total_bins, dtype=torch.int32, device=device)
     for image_idx, (start_time, end_time) in enumerate(zip(image_start_times, image_end_times)):
-        bin_edges = torch.linspace(start_time, end_time, bins_per_image + 1)
-        binned_spike_times = torch.histc(torch.tensor(times), bins=bin_edges.shape[0]-1, min=bin_edges.min(), max=bin_edges.max())
+        bin_edges = torch.linspace(start_time, end_time, bins_per_image + 1, device=device)
+        binned_spike_times = torch.histc(torch.tensor(times,device=device), bins=bin_edges.shape[0]-1, min=bin_edges.min(), max=bin_edges.max())
         end_bin = start_bin + bins_per_image
         if len(binned_spike_times) == len(neuron_spike_bins[start_bin:end_bin]):
             neuron_spike_bins[start_bin:end_bin] = binned_spike_times
@@ -128,21 +141,29 @@ def process_neuron(times, image_start_times, image_end_times, total_bins, bins_p
 
 def process_neuron_wrapper(args):
     """Wrapper function to unpack arguments and call process_neuron."""
-    return process_neuron(*args)
+    return process_neuron(*args, device=device)
 
-def process_all_neurons(spike_times, image_start_times, image_end_times, total_bins, bins_per_image, batch_size=100):
+def process_all_neurons(spike_times, image_start_times, image_end_times, total_bins, bins_per_image, batch_size=50):
     """Process neurons in parallel."""
-    args_list = [(times, image_start_times, image_end_times, total_bins, bins_per_image) for times in spike_times.values()]
+    args_list = [(times, image_start_times.to(device), image_end_times.to(device), total_bins, bins_per_image) for times in spike_times.values()]
     spike_matrix = []
     
     #Process neurons in smaller batches to prevent memory overload
     for i in range(0, len(args_list), batch_size):
         batch = args_list[i:i+batch_size]
-        with concurrent.futures.ProcessPoolExecutor() as executor:
-            batch_result = list(tqdm(executor.map(process_neuron_wrapper, batch), total=len(batch), desc=f'Processing neurons batch {i//batch_size + 1}'))
-        spike_matrix.extend(batch_result)
+        try:
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                batch_result = list(tqdm(executor.map(process_neuron_wrapper, batch), total=len(batch), desc=f'Processing neurons batch {i//batch_size + 1}'))
+            spike_matrix.extend(batch_result)
+            
+            print_memory_usage()
+            print_gpu_memory()
+            torch.cuda.empty_cache()  # Clear GPU cache
+        except Exception as e:
+            print(f"Error processing batch {i//batch_size + 1}: {str(e)}")
+            break
         
-        gc.collect() 
+        gc.collect()
         
     print(f'Spike matrix size -> {np.shape(spike_matrix)}')
     #Return list of tensors instead of torch.stack for memory efficiency 
@@ -162,7 +183,7 @@ def create_and_prepare_spike_dataframe(spike_matrix, spike_times, stimulus_table
     pd.DataFrame: A prepared DataFrame containing spike data and a frame column.
     """
     # Create the DataFrame
-    spike_df = pd.DataFrame(spike_matrix.numpy(), index=spike_times.keys())
+    spike_df = pd.DataFrame(spike_matrix.cpu.numpy(), index=spike_times.keys())
     
     # Transpose the DataFrame
     spike_df = spike_df.T
@@ -256,7 +277,9 @@ def process_and_save_data(session, spike_times, session_number, output_dir, time
     """
     print("Step 1: Preparing the data")
     stimulus_table = get_stimulus_table(session)
-    image_start_times, image_end_times, total_bins, bins_per_image = calculate_bins(stimulus_table, timesteps_per_frame)
+    image_start_times = torch.tensor(stimulus_table.start_time.values, device=device)
+    image_end_times = torch.tensor(stimulus_table.stop_time.values, device=device)
+    image_durations = image_end_times - image_start_times
     spike_matrix = process_all_neurons(spike_times, image_start_times, image_end_times, total_bins, bins_per_image)
     spike_df = create_and_prepare_spike_dataframe(spike_matrix, spike_times, stimulus_table, timesteps_per_frame)
     
@@ -366,6 +389,9 @@ def master_function(session_number, output_dir, timesteps_per_frame=10, timeout=
     str: The name of the saved filtered data file.
     """
     
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+    
     output_dir = '/proj/STOR/pipiras/Neuropixel/output'
     
     start_time = time.time()
@@ -405,15 +431,18 @@ def master_function(session_number, output_dir, timesteps_per_frame=10, timeout=
             print("Filtering valid spike times...")
             valid_spike_times = filter_valid_spike_times(spike_times, session)
             gc.collect()
+            torch.cuda.empty_cache()
 
             print("Calculating bins and processing neurons...")
             image_start_times, image_end_times, total_bins, bins_per_image = calculate_bins(stimulus_table, timesteps_per_frame)
             spike_matrix = process_all_neurons(valid_spike_times, image_start_times, image_end_times, total_bins, bins_per_image)
             gc.collect()
+            torch.cuda.empty_cache()
 
             print("Preparing spike DataFrame...")
             spike_df = create_and_prepare_spike_dataframe(spike_matrix, valid_spike_times, stimulus_table, timesteps_per_frame)
             gc.collect()
+            torch.cuda.empty_cache()
 
             print("Normalizing firing rates...")
             normalized_firing_rates = normalize_firing_rates(spike_df)
