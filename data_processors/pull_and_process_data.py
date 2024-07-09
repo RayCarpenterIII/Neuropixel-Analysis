@@ -143,7 +143,7 @@ def process_neuron_wrapper(args):
     """Wrapper function to unpack arguments and call process_neuron."""
     return process_neuron(*args, device=device)
 
-def process_all_neurons(spike_times, image_start_times, image_end_times, total_bins, bins_per_image, batch_size=50):
+def process_all_neurons(spike_times, image_start_times, image_end_times, total_bins, bins_per_image, batch_size=100):
     """Process neurons in parallel."""
     args_list = [(times, image_start_times.to(device), image_end_times.to(device), total_bins, bins_per_image) for times in spike_times.values()]
     spike_matrix = []
