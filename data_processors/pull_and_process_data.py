@@ -1,4 +1,5 @@
 from allensdk.brain_observatory.ecephys.ecephys_project_cache import EcephysProjectCache
+from torch.utils.data import Dataset, DataLoader
 import pandas as pd
 import pickle
 import numpy as np
@@ -8,7 +9,20 @@ import concurrent.futures
 import torch
 import json
 import time
+import gc
+import psutil
 
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f"Using device: {device}")
+
+def print_memory_usage():
+    process = psutil.Process()
+    print(f"Memory usage: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+
+def print_gpu_memory():
+    if torch.cuda.is_available():
+        print(f"GPU memory allocated: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+        print(f"GPU memory cached: {torch.cuda.memory_reserved() / 1e9:.2f} GB")        
 
 def create_directory_and_manifest(directory_name='output'):
     """
@@ -46,30 +60,25 @@ def create_cache_get_session_table(manifest_path):
     session_table = cache.get_session_table()
     return cache, session_table
 
-def pick_session_and_pull_data(cache, session_number):
-    """
-    Pick a session number, pull the data, get spike times, and a specific stimulus table.
+def pick_session_and_pull_data(cache, session_number, timeout=300):
+    try:
+        session = cache.get_session_data(session_number,
+                                         isi_violations_maximum=np.inf,
+                                         amplitude_cutoff_maximum=np.inf,
+                                         presence_ratio_minimum=-np.inf,
+                                         timeout=timeout)
+        spike_times = session.spike_times
+        stimulus_table = session.get_stimulus_table("natural_scenes")
+        
+        # Display objects in session
+        print("Session objects")
+        print([attr_or_method for attr_or_method in dir(session) if attr_or_method[0] != '_'])
+        
+        return spike_times, stimulus_table
     
-    Parameters:
-    cache (EcephysProjectCache): The cache object.
-    session_number (int): The session number.
-    
-    Returns:
-    tuple: A tuple containing spike times and the stimulus table.
-    """
-    session = cache.get_session_data(session_number,
-                                     isi_violations_maximum=np.inf,
-                                     amplitude_cutoff_maximum=np.inf,
-                                     presence_ratio_minimum=-np.inf)
-    spike_times = session.spike_times
-    stimulus_table = session.get_stimulus_table("natural_scenes")
-    
-    # Optional: Display objects within session
-    print("Session objects")
-    print([attr_or_method for attr_or_method in dir(session) if attr_or_method[0] != '_'])
-    
-    return spike_times, stimulus_table
-
+    except TimeoutError:
+        print(f"Timeout occurred while fetching session data for session {session_number}")
+        return None, None
 
 def filter_valid_spike_times(spike_times, session):
     """
@@ -117,13 +126,13 @@ def calculate_bins(stimulus_table, timesteps_per_frame=1):
     total_bins = bins_per_image * len(image_start_times)
     return image_start_times, image_end_times, total_bins, bins_per_image
 
-def process_neuron(times, image_start_times, image_end_times, total_bins, bins_per_image):
+def process_neuron(times, image_start_times, image_end_times, total_bins, bins_per_image, device):
     """Process a single neuron's spike times."""
     start_bin = 0
-    neuron_spike_bins = torch.zeros(total_bins, dtype=torch.int32)
+    neuron_spike_bins = torch.zeros(total_bins, dtype=torch.int32, device=device)
     for image_idx, (start_time, end_time) in enumerate(zip(image_start_times, image_end_times)):
-        bin_edges = torch.linspace(start_time, end_time, bins_per_image + 1)
-        binned_spike_times = torch.histc(torch.tensor(times), bins=bin_edges.shape[0]-1, min=bin_edges.min(), max=bin_edges.max())
+        bin_edges = torch.linspace(start_time, end_time, bins_per_image + 1, device=device)
+        binned_spike_times = torch.histc(torch.tensor(times,device=device), bins=bin_edges.shape[0]-1, min=bin_edges.min(), max=bin_edges.max())
         end_bin = start_bin + bins_per_image
         if len(binned_spike_times) == len(neuron_spike_bins[start_bin:end_bin]):
             neuron_spike_bins[start_bin:end_bin] = binned_spike_times
@@ -132,22 +141,35 @@ def process_neuron(times, image_start_times, image_end_times, total_bins, bins_p
 
 def process_neuron_wrapper(args):
     """Wrapper function to unpack arguments and call process_neuron."""
-    return process_neuron(*args)
+    return process_neuron(*args, device=device)
 
-def process_all_neurons(spike_times, image_start_times, image_end_times, total_bins, bins_per_image):
-    """Process all neurons in parallel."""
-    # Prepare the arguments for each neuron to be processed
-    args_list = [(times, image_start_times, image_end_times, total_bins, bins_per_image) for times in spike_times.values()]
+def process_all_neurons(spike_times, image_start_times, image_end_times, total_bins, bins_per_image, batch_size=100):
+    """Process neurons in parallel."""
+    args_list = [(times, image_start_times.to(device), image_end_times.to(device), total_bins, bins_per_image) for times in spike_times.values()]
+    spike_matrix = []
     
-    # Process neurons using a pool of worker processes
-    with concurrent.futures.ProcessPoolExecutor() as executor:
-        # Use a list comprehension to map process_neuron_wrapper over the arguments
-        spike_matrix = list(tqdm(executor.map(process_neuron_wrapper, args_list), total=len(spike_times), desc='Processing neurons'))
+    #Process neurons in smaller batches to prevent memory overload
+    for i in range(0, len(args_list), batch_size):
+        batch = args_list[i:i+batch_size]
+        try:
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                batch_result = list(tqdm(executor.map(process_neuron_wrapper, batch), total=len(batch), desc=f'Processing neurons batch {i//batch_size + 1}'))
+            spike_matrix.extend(batch_result)
+            
+            print_memory_usage()
+            print_gpu_memory()
+            torch.cuda.empty_cache()  # Clear GPU cache
+        except Exception as e:
+            print(f"Error processing batch {i//batch_size + 1}: {str(e)}")
+            break
+        
+        gc.collect()
+        
     print(f'Spike matrix size -> {np.shape(spike_matrix)}')
-    return torch.stack(spike_matrix)
-
-
-def create_and_prepare_spike_dataframe(spike_matrix, spike_times, stimulus_table):
+    #Return list of tensors instead of torch.stack for memory efficiency 
+    return [torch.tensor(matrix) for matrix in spike_matrix]
+    
+def create_and_prepare_spike_dataframe(spike_matrix, spike_times, stimulus_table, timesteps_per_frame):
     """
     Create a spike DataFrame and prepare it by adding a frame column.
     
@@ -155,23 +177,25 @@ def create_and_prepare_spike_dataframe(spike_matrix, spike_times, stimulus_table
     spike_matrix (torch.Tensor): The spike matrix containing processed spike times for all neurons.
     spike_times (dict): A dictionary containing the original spike times.
     stimulus_table (pd.DataFrame): The stimulus table containing stimulus-related data.
+    timesteps_per_frame (int): Number of timesteps per frame for binning.
     
     Returns:
     pd.DataFrame: A prepared DataFrame containing spike data and a frame column.
     """
     # Create the DataFrame
-    spike_df = pd.DataFrame(spike_matrix.numpy(), index=spike_times.keys())
+    spike_df = pd.DataFrame(spike_matrix.cpu.numpy(), index=spike_times.keys())
     
     # Transpose the DataFrame
     spike_df = spike_df.T
     
     # Add and populate the frame column
     spike_df['frame'] = 'nan'
-    spike_df['frame'] = np.repeat(np.array(stimulus_table['frame']), 10)
-    
+    spike_df['frame'] = np.repeat(np.array(stimulus_table['frame']), timesteps_per_frame)
+
     return spike_df
 
-def save_and_count_spike_dataframe(spike_df, session_number, output_dir):
+
+def save_and_count_spike_dataframe(spike_df, session_number, output_dir, timesteps_per_frame):
     """
     Save the spike DataFrame to a pickle file in the specified directory and count the number of NaN values.
     
@@ -179,6 +203,7 @@ def save_and_count_spike_dataframe(spike_df, session_number, output_dir):
     spike_df (pd.DataFrame): The spike DataFrame to be saved.
     session_number (int): The session number.
     output_dir (str): The directory where the DataFrame should be saved.
+    timesteps_per_frame (int): Number of timesteps per frame for binning.
     
     Returns:
     str: The name of the saved file.
@@ -252,9 +277,11 @@ def process_and_save_data(session, spike_times, session_number, output_dir, time
     """
     print("Step 1: Preparing the data")
     stimulus_table = get_stimulus_table(session)
-    image_start_times, image_end_times, total_bins, bins_per_image = calculate_bins(stimulus_table, timesteps_per_frame)
+    image_start_times = torch.tensor(stimulus_table.start_time.values, device=device)
+    image_end_times = torch.tensor(stimulus_table.stop_time.values, device=device)
+    image_durations = image_end_times - image_start_times
     spike_matrix = process_all_neurons(spike_times, image_start_times, image_end_times, total_bins, bins_per_image)
-    spike_df = create_and_prepare_spike_dataframe(spike_matrix, spike_times, stimulus_table)
+    spike_df = create_and_prepare_spike_dataframe(spike_matrix, spike_times, stimulus_table, timesteps_per_frame)
     
     print("Step 2: Cleaning the data")
     normalized_firing_rates = normalize_firing_rates(spike_df)
@@ -265,11 +292,91 @@ def process_and_save_data(session, spike_times, session_number, output_dir, time
     print(f"Number of NaN values in the final DataFrame: {nan_count}")
     
     print("Data processing and saving complete.")
-    filtered_data_file = f'filtered_normalized_pickle_{session_number}_{timesteps_per_frame}.pkl'
-    return os.path.join(output_dir, filtered_data_file)
+    filtered_data_file = save_and_count_spike_dataframe(filtered_normalized_firing_rates, session_number, output_dir, timesteps_per_frame)
+    return filtered_data_file
 
 
-def master_function(session_number, output_dir='output', timesteps_per_frame=10):
+def get_session_ids(cache):
+    """
+    Get all available session IDs from the cache.
+    
+    Parameters:
+    cache (EcephysProjectCache): The cache object.
+    
+    Returns:
+    list: A list of all session IDs.
+    """
+    session_table = cache.get_session_table()
+    return session_table.index.tolist()
+
+def process_session_batch(cache, session_batch, output_dir, timesteps_per_frame=5, timeout=300):
+    """
+    Process a batch of sessions.
+    
+    Parameters:
+    cache (EcephysProjectCache): The cache object.
+    session_batch (list): List of session IDs to process.
+    output_dir (str): The directory where data should be saved.
+    timesteps_per_frame (int): Number of timesteps per frame for binning.
+    timeout (int): Timeout for fetching session data.
+    
+    Returns:
+    dict: A dictionary with session IDs as keys and processed DataFrames as values.
+    """
+    processed_data = {}
+    
+    for session_number in session_batch:
+        print(f"\nProcessing session {session_number}")
+        spike_df = master_function(session_number, output_dir, timesteps_per_frame, timeout)
+        
+        if spike_df is not None:
+            processed_data[session_number] = spike_df
+            
+            # Save the spike_df as a pickle file
+            pkl_file_path = os.path.join(output_dir, f'spike_trains_with_stimulus_session_{session_number}_{timesteps_per_frame}.pkl')
+            with open(pkl_file_path, 'wb') as f:
+                pickle.dump(spike_df, f)
+            print(f"Saved pickle file for session {session_number}")
+        
+        gc.collect()
+    
+    return processed_data
+
+def process_all_sessions_in_batches(cache, output_dir, batch_size=5, timesteps_per_frame=5, timeout=300):
+    """
+    Process all available sessions in batches.
+    
+    Parameters:
+    cache (EcephysProjectCache): The cache object.
+    output_dir (str): The directory where data should be saved.
+    batch_size (int): Number of sessions to process in each batch.
+    timesteps_per_frame (int): Number of timesteps per frame for binning.
+    timeout (int): Timeout for fetching session data.
+    
+    Returns:
+    dict: A dictionary with session IDs as keys and processed DataFrames as values.
+    """
+    session_ids = get_session_ids(cache)
+    processed_data = {}
+    
+    print(f"Total number of sessions: {len(session_ids)}")
+    
+    for i in range(0, len(session_ids), batch_size):
+        batch = session_ids[i:i+batch_size]
+        print(f"\nProcessing batch {i//batch_size + 1} of {len(session_ids)//batch_size + 1}")
+        batch_results = process_session_batch(cache, batch, output_dir, timesteps_per_frame, timeout)
+        processed_data.update(batch_results)
+        
+        gc.collect()
+        
+        #Add delay between batches to prevent kernal timeout
+        time.sleep(10)
+    
+    return processed_data
+
+
+
+def master_function(session_number, output_dir, timesteps_per_frame=10, timeout=300):
     """
     Master function to execute the entire workflow from data extraction to saving.
 
@@ -281,73 +388,75 @@ def master_function(session_number, output_dir='output', timesteps_per_frame=10)
     Returns:
     str: The name of the saved filtered data file.
     """
+    
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+    
+    output_dir = '/proj/STOR/pipiras/Neuropixel/output'
+    
     start_time = time.time()
 
     print("Updated version 3!")
     print("Initializing workflow...")
     
-    # Define the full paths for the input files
+    # Paths for input files
     spike_trains_file_path = os.path.join(output_dir, f'spike_trains_with_stimulus_session_{session_number}_{timesteps_per_frame}.pkl')
-    normalized_firing_rates_file_path = os.path.join(output_dir, f'normalized_firing_rates_{session_number}_{timesteps_per_frame}.pkl')
+    # normalized_firing_rates_file_path = os.path.join(output_dir, f'normalized_firing_rates_{session_number}_{timesteps_per_frame}.pkl')
 
     # Check if the files already exist
-    if os.path.exists(spike_trains_file_path) and os.path.exists(normalized_firing_rates_file_path):
+    if os.path.exists(spike_trains_file_path):
         print("Loading existing datasets...")
         
-        # Load the spike trains dataset
+        # Load the spike trains 
         with open(spike_trains_file_path, 'rb') as f:
             spike_df = pickle.load(f)
         print(f"Loaded spike trains dataset: {type(spike_df)}")
 
-        # Load the normalized firing rates dataset
-        with open(normalized_firing_rates_file_path, 'rb') as f:
-            normalized_firing_rates = pickle.load(f)
-        print(f"Loaded normalized firing rates dataset: {type(normalized_firing_rates)}")
-
         print(f"Total time elapsed: {time.time() - start_time:.2f} seconds")
-        return spike_df, normalized_firing_rates
+        return spike_df
 
-    # Continue with data creation if the files do not exist
-    print("Creating directory and manifest path...")
-    output_dir, manifest_path = create_directory_and_manifest(directory_name=output_dir)
+    else:
+        try:
+            # Create data if non-existent
+            print("Creating directory and manifest path...")
+            output_dir, manifest_path = create_directory_and_manifest(directory_name=output_dir)
 
-    print("Initializing EcephysProjectCache and session table...")
-    cache, session_table = create_cache_get_session_table(manifest_path)
-    session = cache.get_session_data(session_number)
+            print("Initializing EcephysProjectCache and session table...")
+            cache, session_table = create_cache_get_session_table(manifest_path)
+            session = cache.get_session_data(session_number)
 
-    print("Fetching session data and spike times...")
-    spike_times, stimulus_table = pick_session_and_pull_data(cache, session_number)
+            print("Fetching session data and spike times...")
+            spike_times, stimulus_table = pick_session_and_pull_data(cache, session_number, timeout)
 
-    print("Filtering valid spike times...")
-    valid_spike_times = filter_valid_spike_times(spike_times, session)
+            print("Filtering valid spike times...")
+            valid_spike_times = filter_valid_spike_times(spike_times, session)
+            gc.collect()
+            torch.cuda.empty_cache()
 
-    print("Calculating bins and processing neurons...")
-    image_start_times, image_end_times, total_bins, bins_per_image = calculate_bins(stimulus_table, timesteps_per_frame)
-    spike_matrix = process_all_neurons(valid_spike_times, image_start_times, image_end_times, total_bins, bins_per_image)
+            print("Calculating bins and processing neurons...")
+            image_start_times, image_end_times, total_bins, bins_per_image = calculate_bins(stimulus_table, timesteps_per_frame)
+            spike_matrix = process_all_neurons(valid_spike_times, image_start_times, image_end_times, total_bins, bins_per_image)
+            gc.collect()
+            torch.cuda.empty_cache()
 
-    print("Preparing spike DataFrame...")
-    spike_df = create_and_prepare_spike_dataframe(spike_matrix, valid_spike_times, stimulus_table)
+            print("Preparing spike DataFrame...")
+            spike_df = create_and_prepare_spike_dataframe(spike_matrix, valid_spike_times, stimulus_table, timesteps_per_frame)
+            gc.collect()
+            torch.cuda.empty_cache()
 
-    print("Normalizing firing rates...")
-    normalized_firing_rates = normalize_firing_rates(spike_df)
+            print("Normalizing firing rates...")
+            normalized_firing_rates = normalize_firing_rates(spike_df)
 
-    print("Save raw and normalized firing rate dataframes as a pickle file.")
-    with open(spike_trains_file_path, 'wb') as f:
-        pickle.dump(spike_df, f)
-    with open(normalized_firing_rates_file_path, 'wb') as f:
-        pickle.dump(normalized_firing_rates, f)
+            print("Save raw and normalized firing rate dataframes as a pickle file.")
+            with open(spike_trains_file_path, 'wb') as f:
+                pickle.dump(spike_df, f)
+            with open(normalized_firing_rates_file_path, 'wb') as f:
+                pickle.dump(normalized_firing_rates, f)
 
-    print(f"Total time elapsed: {time.time() - start_time:.2f} seconds")
-    
+            print(f"Total time elapsed: {time.time() - start_time:.2f} seconds")
+
+        except Exception as e:
+            #logging.error(f"Error: An unexpected error occurred - {str(e)}")
+            return None, None
+
     return spike_df, normalized_firing_rates
-
-
-if __name__ == "__main__":
-
-    default_session_number = 123456  # Replace with session number
-    default_output_dir = "./output_data"  #Can rename 
-    
-    # Execute the master function
-    print("Executing the master function...")
-    saved_file = master_function(default_session_number, default_output_dir)
-    print(f"Saved file located at: {saved_file}")
