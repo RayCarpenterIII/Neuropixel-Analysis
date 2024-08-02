@@ -53,9 +53,13 @@ spatiotemporal brain dynamics: A comparison of graph neural network architecture
 Neuroscience, 2022, 6 (3): 665–701.
 4. Ray Tune: Hyperparameter Tuning. https://docs.ray.io/
 
+
 <p align="center">
-  <img src="https://github.com/RayCarpenterIII/Neuropixel-Analysis/assets/106690201/6207ea50-61c8-44c7-8da7-29b8fa157cf0" width="60%">
+  <img src="https://github.com/RayCarpenterIII/Neuropixel-Analysis/assets/106690201/6207ea50-61c8-44c7-8da7-29b8fa157cf0" style="width: 45%; height: auto; display: inline-block;">
+  <img src="https://github.com/RayCarpenterIII/Neuropixel-Analysis/raw/main/pictures/Poster.jpeg" style="width: 45%; height: auto; display: inline-block;">
 </p>
+
+[Poster PDF](https://github.com/RayCarpenterIII/Neuropixel-Analysis/raw/main/pictures/Poster.pdf)
 
 We are implementing Ray Tune and Pytorch for automatic model optimization and parallel computing while recording our run data at Wandb.ai. 
 
