@@ -43,8 +43,7 @@ PC-MVLR and the LSTM demonstrates how dimensionality reduction and temporal info
 can improve model performance.
 
 References
-1. Allen Brain Observatory. Neuropixel[Poster.pdf](https://github.com/user-attachments/files/16473154/Poster.pdf)
-s Visual Coding.
+1. Allen Brain Observatory. Neuropixels Visual Coding.
 https://portal.brain-map.org/circuits-behavior/visual-coding-neuropixels
 2. Paulk AC, Kfir Y, Khanna AR et al. Large-scale recording with single neuron resolution using
 Neuropixels probes in human cortex. Nature Neuroscience, 2022, 25: 252-263.
