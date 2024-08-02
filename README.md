@@ -1,23 +1,57 @@
 
 # Neuropixel Analysis 
-Drawing insights from neuronal processes is integral for understanding the neural mechanisms underlying cognitive processes, providing a higher definition recording for brain-computer interfaces, and helping develop advanced neurorehabilitation strategies. Our study sought to survey and identify machine-learning models and deep-learning architectures capable of predicting visual stimuli based on the spike patterns of single neurons. We worked with Neuropixel data from the Allen Brain Observatory [1,2] consisting of the firing rates from single neurons, also called spike trains, from several male mice's visual cortex, thalamus, and hippocampus. Each recording involved around 2,000 separate units. The mice were shown 118 different natural images of predators, foliage, and other scenes from their natural habitat at random in repetition and for 250 ms each. The firing rates of the separate units were then used as predictors for the shown images. 
+Our study sought to survey and identify machine learning models and deep learning architectures
+capable of predicting visual stimuli based on the spike patterns of single neurons. Drawing
+insights from neuronal encoding is integral for understanding the neural mechanisms underlying
+cognitive processes, aiding the development of brain-computer interfaces, and providing models
+that may be useful for classifying disease or predicting functionalities. We worked with
+Neuropixel data from the Allen Brain Observatory [1,2] consisting of the firing rates from single
+neurons, referred to as units, from several male mice's visual cortex, thalamus, and hippocampus.
+Each recording involved around 2,000 separate units, which were used as the input variables for
+all models. The mice were shown 118 different natural images of predators, foliage, and other
+scenes from their natural habitat at random in repetition and for 250 ms each. The image
+numbers associated with them were used as the variables to predict. Three of the 32 mice with
+data recorded were chosen for initial model selection, benchmarking, and hyper-parameter range
+searches. Models that scored the highest were tested across the rest of the 32 mice utilizing the
+found hyper-parameter ranges.
 
-We assessed the prediction performance on test data for various machine and deep learning architectures built on training data. A random guess was associated with a baseline test accuracy of 1/118 = 0.85%. Support Vector Machine and Principal Component Regression had minimal success. A single-layer neural network (NN) on aggregate firing rates over the length of a visual stimulus resulted in a test accuracy of 93%. The test accuracy of multi-layer NNs would diminish for each layer added.  To test the utility of spatial modeling, a single-layer Graph Convolutional Network (GCN) and a graph attention (GAT) network were tried with 48% and 89.8% accuracies, respectively.  A Long Short-Term Memory network was tested to consider the temporal aspect of the data. The firing rates during a single stimulus were broken into ten time bins for models with a temporal component. The LSTM produced the highest test accuracy at 96.6%. A transformer was also tested, which may account for the spatial aspect through its attention mechanisms and the sequential nature of the data. This had a related test accuracy of 93%.
+We assessed the prediction performance on test data for various machine and deep learning
+architectures built on training data. A random guess was associated with a baseline test accuracy
+of 1/118 = 0.85%. Multivariate logistic regression(MVLR) returned an accuracy of 91.76%.
+Next, Principal Component Analysis was performed, followed by MVLR (PC-MVLR) on the
+components. The number of principal components was equal to the number of original variables.
+This model achieved the second-highest accuracy of 95.29%. Support Vector Classifiers with
+linear, polynomial, and radial kernels achieved an accuracy of 92.52%. A single-hidden layer
+neural network (NN) on aggregate firing rates over the length of a visual stimulus resulted in a
+test accuracy of 93%. To test the utility of spatial modeling, a single-layer Graph Convolution
+Network (GCN) and a graph attention (GAT) network were tried with 48% and 91.9%
+accuracies, respectively. Each spatial model was tested with three configurations: a fully
+connected graph, a graph created from cross-correlation with a 25% threshold, and a
+backpropagation-optimized graph starting with full connections. Multiple models were tested to
+consider the temporal aspect of the data, whereby the firing rates were presented in a sequence
+over time bins during a visual stimulus. Consisting of a Long-Short Term Memory (LSTM)
+model, Spatio-Temporal Graph Attention Network, and a Transformer. The LSTM produced the
+highest test accuracy at 97.73%, the ST-GAT achieved 92.4%, and the Transformer achieved
+93% test accuracy. We tested each temporal model by shifting each 250ms interval into bins of 1,
+2, 3, 5, 10, and 20. Gains in accuracy are maximized at three to five bins. Based on the mouse,
+results would range from 51 - 97.7% accuracy when implementing the LSTM.
 
-A Spatial Temporal Graph Attention Network (ST-GAT) was also implemented to account for both the spatial and temporal aspects. It accounts for the spatial aspects through the first layer, the GAT. The output is then passed through the LSTM to account for temporal data. The ST-GAT produced a test accuracy of 92.4%.  This model allows for an adjacency matrix to be found through backpropagation, potentially representing functional connectomics between single neurons [3]. 
-
-We have found that architectures with fewer layers, including NNs, LSTMs, and Transformers, consistently demonstrated higher test accuracies than their multi-layered counterparts, which had many more parameters and likely overfitted by capturing noise in the data. Additionally, the success of LSTM and Transformers suggests that including a temporal component allows models to handle the sequential nature of neural data, increasing prediction accuracy. Our results were consistent across several mice. 
-
-Both machine learning models, Support Vector Machines and Principal Component Regression, performed worse than all other deep learning-based models. The ability to tune multiple weights to specific neurons might account for the relative success of deep learning architectures over machine learning models. This supports their strength in modeling spike train data.
-
-Our results provide key insights into the compatibility of different learning architectures in drawing valid conclusions about function from neural data at the micro-level. Single-layer neural Networks, Transformers, LSTMs, and Spatiotemporal Graph Neural Networks can all predict visual stimuli with up to 96.6% accuracy. Given related neural responses, similar modeling may be extended to predict other functions in mice and humans more broadly. 
+Our results provide insights into the utility of different learning architectures in prediction tasks
+using neural data at the micro-level. We have found that deep learning architectures with fewer
+hidden layers consistently demonstrated higher test accuracies for all models. The success of
+PC-MVLR and the LSTM demonstrates how dimensionality reduction and temporal information
+can improve model performance.
 
 References
-
-1. Allen Brain Observatory. Neuropixels Visual Coding. https://portal.brain-map.org/circuits-behavior/visual-coding-neuropixels 
-2. Paulk AC, Kfir Y, Khanna AR et al. Large-scale recording with single neuron resolution using Neuropixels probes in human cortex. Nature Neuroscience, 2022, 25: 252-263.
-3. Wein S, Schuller A, Tome AM, et al. Forecasting brain activity based on models of spatiotemporal brain dynamics: A comparison of graph neural network architectures. Network Neuroscience, 2022, 6 (3): 665–701.
-4.  Ray Tune: Hyperparameter Tuning. https://docs.ray.io/
+1. Allen Brain Observatory. Neuropixel[Poster.pdf](https://github.com/user-attachments/files/16473154/Poster.pdf)
+s Visual Coding.
+https://portal.brain-map.org/circuits-behavior/visual-coding-neuropixels
+2. Paulk AC, Kfir Y, Khanna AR et al. Large-scale recording with single neuron resolution using
+Neuropixels probes in human cortex. Nature Neuroscience, 2022, 25: 252-263.
+3. Wein S, Schuller A, Tome AM, et al. Forecasting brain activity based on models of
+spatiotemporal brain dynamics: A comparison of graph neural network architectures. Network
+Neuroscience, 2022, 6 (3): 665–701.
+4. Ray Tune: Hyperparameter Tuning. https://docs.ray.io/
 
 <p align="center">
   <img src="https://github.com/RayCarpenterIII/Neuropixel-Analysis/assets/106690201/6207ea50-61c8-44c7-8da7-29b8fa157cf0" width="60%">
